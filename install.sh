@@ -74,13 +74,13 @@ install_package jq
 echo "Todas las dependencias han sido instaladas correctamente."
 
 INSTALL_DIR="/usr/local/bin"
-SCRIPT_PATH="$(pwd)/ani-es"
+SCRIPT_PATH="$(pwd)/the-wired"
 JSON_PATH="$(pwd)/excepciones.json"
-mkdir -p ~/ani-es/
+mkdir -p ~/the-wired/
 DATA_PATH="$(pwd)/history.db"
 
-if [ -f "$INSTALL_DIR/ani-es" ]; then
-    echo "El script ani-es ya existe en el PATH."
+if [ -f "$INSTALL_DIR/the-wired" ]; then
+    echo "El script the-wired ya existe en el PATH."
     exit 1
 fi
 
@@ -91,18 +91,18 @@ fi
 if [ -f "$INSTALL_DIR/history.db" ]; then
     exit 1
 fi
-sudo chmod +x ani-es
+sudo chmod +x the-wired
 sudo chmod +x uninstall.sh
 sudo cp "$SCRIPT_PATH" "$INSTALL_DIR"
 sudo cp "$JSON_PATH" "$INSTALL_DIR"
-if [ ! -f ~/ani-es/history.db ]; then
-    sudo cp "$DATA_PATH" ~/ani-es/
-    sudo chmod 777 ~/ani-es/history.db
+if [ ! -f ~/the-wired/history.db ]; then
+    sudo cp "$DATA_PATH" ~/the-wired/
+    sudo chmod 777 ~/the-wired/history.db
 else
     echo "El archivo history.db ya existe y no se ha sobrescrito."
 fi
-sudo chmod 777 ~/ani-es/history.db
+sudo chmod 777 ~/the-wired/history.db
 echo ""
 clear
-echo "El script ani-es se ha instalado correctamente en el directorio $INSTALL_DIR."
-echo "Ahora puedes ejecutar 'ani-es' en cualquier lugar del sistema."
+echo "El script the-wired se ha instalado correctamente en el directorio $INSTALL_DIR."
+echo "Ahora puedes ejecutar 'the-wired' en cualquier lugar del sistema."

@@ -3,7 +3,11 @@
 VERSION="1.4.1"
 
 CONTINUE=0
+DOWNLOAD_MODE=0
 progress="00:00:00"
+
+# Ruta de descarga para biblioteca Jellyfin (sobrescribible por entorno)
+ANIME_DOWNLOAD_DIR="${ANIME_DOWNLOAD_DIR:-N:/Multimedy/Anime}"
 
 # cosas para texto
 RED='\033[0;31m'
@@ -26,14 +30,22 @@ BG_WHITE='\033[47m'
 
 NC='\033[0m'
 
-HISTORY_DIR="$HOME/ani-es"
+HISTORY_DIR="$HOME/the-wired"
 OLD_DB="$HISTORY_DIR/history.db"
-HISTORY_FILE="$HOME/ani-es/history.json"
+HISTORY_FILE="$HOME/the-wired/history.json"
+# Ruta legacy de ani-es para migracion automatica del historial
+LEGACY_HISTORY_FILE="$HOME/ani-es/history.json"
 
 
 init_history() {
 
     mkdir -p "$HISTORY_DIR"
+
+    # Migracion: si existe historial de ani-es y el de the-wired esta vacio/missing, copiarlo
+    if [[ -f "$LEGACY_HISTORY_FILE" ]] && [[ ! -f "$HISTORY_FILE" || "$HISTORY_FILE" -ot "$LEGACY_HISTORY_FILE" ]]; then
+        cp "$LEGACY_HISTORY_FILE" "$HISTORY_FILE"
+        echo "Historial de ani-es migrado a the-wired."
+    fi
 
     [[ -f "$HISTORY_FILE" ]] || echo "{}" > "$HISTORY_FILE"
 
@@ -149,17 +161,18 @@ save_history() {
 
 show_help() {
     echo ""
-    echo "    Uso: ani-es [opciones] [busqueda]"
+    echo "    Uso: the-wired [opciones] [busqueda]"
     echo ""
     echo "    Opciones:"
     echo "      -h, --help       Mostrar ayuda"
     echo "      -v, --version    Mostrar versión"
     echo "      -c, --continue   Continua el anime en donde ultimo lo dejaste"
+    echo "      -d, --download   Modo descarga (oculta la opcion de reproducir)"
     echo ""
 }
 
 show_version() {
-    echo -e "ani-es ${PURPLE}v${VERSION}${NC}"
+    echo -e "the-wired ${PURPLE}v${VERSION}${NC}"
 }
 
 # parseo de argumentos
@@ -175,6 +188,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         -c|--continue)
             CONTINUE=1
+            ;;
+        -d|--download)
+            DOWNLOAD_MODE=1
             ;;
         *)
             break
@@ -221,17 +237,125 @@ detect_env() {
     fi
 }
 
+# ============================================================================
+# Funciones de descarga para Jellyfin
+# ============================================================================
+
+# Sanitiza un nombre para que sea valido como nombre de archivo en Windows.
+# Elimina los caracteres invalidos: < > : " / \ | ? *
+# No modifica otros caracteres Unicode (incluidos espacios y acentos).
+# Usa octales en tr porque el backslash literal en argumentos se manglea en MSYS2.
+#   < \074  > \076  : \072  " \042  / \057  \ \134  | \174  ? \077  * \052
+sanitize_filename() {
+    local name="$1"
+    name=$(printf "%s" "$name" | tr -d "\074\076\072\042\057\134\174\077\052")
+    # Recorta espacios/puntos al final (invalidos como sufijo en Windows)
+    name="${name%"${name##*[![:space:].]}"}"
+    printf "%s" "$name"
+}
+
+# Construye la ruta de salida Jellyfin para un episodio:
+#   <ANIME_DOWNLOAD_DIR>/<Anime>/Season 01/<Anime> - S01E01.mp4
+# $1 = nombre del anime
+# $2 = numero de temporada (entero)
+# $3 = numero de episodio (entero)
+get_episode_output_path() {
+    local anime="$1"
+    local season="$2"
+    local episode="$3"
+    local safe_anime season_dir ep_num season_num filename
+
+    safe_anime=$(sanitize_filename "$anime")
+    season_dir=$(printf "Season %02d" "$season")
+    ep_num=$(printf "%02d" "$episode")
+    season_num=$(printf "%02d" "$season")
+    filename="${safe_anime} - S${season_num}E${ep_num}.mp4"
+
+    echo "${ANIME_DOWNLOAD_DIR}/${safe_anime}/${season_dir}/${filename}"
+}
+
+# Comprueba que las dependencias de descarga (yt-dlp y ffmpeg) estan presentes.
+# Devuelve 0 si todo OK, 1 si falta alguna.
+check_download_deps() {
+    local missing=()
+    local cmd
+    for cmd in yt-dlp ffmpeg; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+    if [ ${#missing[@]} -ne 0 ]; then
+        for cmd in "${missing[@]}"; do
+            echo -e "${RED}${cmd} no está instalado.${NC}"
+        done
+        echo -e "${YELLOW}Instala las dependencias antes de descargar.${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Descarga un unico episodio con yt-dlp.
+# $1 = nombre del anime
+# $2 = numero de episodio (entero)
+# $3 = URL del stream (.m3u8 o directo)
+# Devuelve 0 si OK o si ya existia, codigo de yt-dlp si falla.
+download_episode() {
+    local anime="$1"
+    local episode="$2"
+    local url="$3"
+    local out_path out_dir out_template rc
+
+    out_path=$(get_episode_output_path "$anime" 1 "$episode")
+    out_dir=$(dirname "$out_path")
+
+    # Si el archivo ya existe, comprobamos si es un MP4 valido con ffprobe
+    # Y que no queden fragmentos parciales (.part*) sueltos.
+    # Si es valido y completo -> omitimos. Si esta corrupto/incompleto -> redescargamos.
+    if [[ -f "$out_path" ]]; then
+        local part_files
+        part_files=$(ls "${out_path%.mp4}".mp4.part* 2>/dev/null)
+        if ffprobe -v error "$out_path" >/dev/null 2>&1 && [[ -z "$part_files" ]]; then
+            echo -e "${YELLOW}Episodio $episode ya existe. Omitiendo...${NC}"
+            return 0
+        else
+            # Archivo parcial/corrupto: razon clara para eliminarlo.
+            echo -e "${YELLOW}Episodio $episode existe pero está incompleto. Redescargando...${NC}"
+            rm -f "$out_path" "${out_path%.mp4}".mp4.part* 2>/dev/null
+        fi
+    fi
+
+    mkdir -p "$out_dir"
+
+    echo -e "${CYAN}Descargando episodio $episode a:${NC}"
+    echo "  $out_path"
+
+    # --merge-output-format mp4 : remuxea a MP4 compatible Jellyfin sin recodificar
+    #   (H.264 + AAC se remuxea, no se reencodea).
+    # -o ...%(ext)s : yt-dlp elige la extension y al fusionar queda .mp4.
+    # Comportamiento por defecto de yt-dlp: continua descargas parciales (.part).
+    yt-dlp --merge-output-format mp4 -o "${out_path%.mp4}.%(ext)s" "$url"
+    rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        echo -e "${RED}Error descargando episodio $episode (código $rc).${NC}"
+        return $rc
+    fi
+
+    echo -e "${GREEN}Episodio $episode descargado correctamente.${NC}"
+    return 0
+}
+
 main() {
 
-urlo="https://raw.githubusercontent.com/Zhuchii/ani-es/refs/heads/main/ani-es"
+urlo="https://raw.githubusercontent.com/KabraX/the-wired/refs/heads/main/the-wired"
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-ARCHIVO="$SCRIPT_DIR/ani-es"
+ARCHIVO="$SCRIPT_DIR/the-wired"
 
 echo -e ${BLUE}Verificando actualizaciones disponibles...${NC}
 actualizado=$(curl -s "$urlo")
 actual=$(cat "$ARCHIVO")
 
-update="$(curl -s "https://raw.githubusercontent.com/Zhuchii/ani-es/refs/heads/main/ani-es")"
+update="$(curl -s "https://raw.githubusercontent.com/KabraX/the-wired/refs/heads/main/the-wired")"
 if [ "$update" != "$(cat "$ARCHIVO")" ]; then
     echo -n -e "${CYAN}Hay una actualizacion disponible se recomienda actualizar para garantizar que el script funcine correctamente (y/n) ${NC}"
     read ele
@@ -568,7 +692,7 @@ if [ -z "$num_episodios" ]; then
 fi
 
 if [ -z "$num_episodios" ]; then
-  echo -e "Enlace ${CYAN}$nuevaurl${NC} no válido. Por favor ve a ${GREEN} https://github.com/Zhuchii/ani-es ${NC} y abre un issue especificando el enlace y el anime que estabas intentando ver. Lo corregiré y actualizaré el script ;)"
+  echo -e "Enlace ${CYAN}$nuevaurl${NC} no válido. Por favor ve a ${GREEN} https://github.com/KabraX/the-wired ${NC} y abre un issue especificando el enlace y el anime que estabas intentando ver. Lo corregiré y actualizaré el script ;)"
   echo "$url_without_https"
   exit
 fi
@@ -597,8 +721,15 @@ fi
 capurl="$nuevaurl/$capi"
 
 
-videocap(){
-capa=$1
+# ----------------------------------------------------------------------------
+# scrape_episode: extrae UNICAMENTE el scraping del episodio.
+# No reproduce ni muestra menus. Rellena la variable global src_contenido
+# con la URL fresca del stream (.m3u8 o directo).
+# $1 = URL completa del episodio (ej: https://jkanime.net/<anime>/<ep>)
+# Usa $capi (numero/etiqueta de episodio) y $url_without_https del ambito de main.
+# ----------------------------------------------------------------------------
+scrape_episode(){
+local capa="$1"
 
 wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p "$capa" > /dev/null 2>&1
 
@@ -648,6 +779,17 @@ END
     echo ""
   fi
 fi
+}
+
+# ----------------------------------------------------------------------------
+# videocap: scraping + reproduccion con mpv + menu Siguiente/Retroceder/Atras.
+# Mantiene el comportamiento original. Solo se ha extraido el scraping a
+# scrape_episode() para poder reutilizarlo en las descargas.
+# ----------------------------------------------------------------------------
+videocap(){
+capa=$1
+
+scrape_episode "$capa"
 
 if [ "$tipo" == "Pelicula" ]; then
   capi=1
@@ -704,7 +846,171 @@ elif [[ "$opcion" == "Atras" ]]; then
   main
 fi
 }
-videocap $capurl
+
+# ----------------------------------------------------------------------------
+# download_season: descarga todos los episodios de una temporada.
+# IMPORTANTE: las URLs .m3u8 son temporales, por eso se obtiene una URL FRESCA
+# para cada episodio justo antes de descargarlo (scrape_episode por episodio).
+# $1 = nombre del anime
+# $2 = episodio inicial
+# $3 = episodio final (num_episodios)
+# $4 = URL base del anime (nuevaurl)
+# ----------------------------------------------------------------------------
+download_season(){
+local anime="$1"
+local start_ep="$2"
+local end_ep="$3"
+local base_url="$4"
+local ep downloaded=0 existing=0 failed=0 failed_eps="" rc
+
+for ep in $(seq "$start_ep" "$end_ep"); do
+    echo ""
+    echo -e "${CYAN}=== Episodio $ep ===${NC}"
+
+    # Comprobacion temprana: si ya existe y es valido y completo, ni siquiera scrapeamos.
+    local out_path part_files
+    out_path=$(get_episode_output_path "$anime" 1 "$ep")
+    part_files=$(ls "${out_path%.mp4}".mp4.part* 2>/dev/null)
+    if [[ -f "$out_path" ]] && ffprobe -v error "$out_path" >/dev/null 2>&1 && [[ -z "$part_files" ]]; then
+        echo -e "${YELLOW}Episodio $ep ya existe. Omitiendo...${NC}"
+        existing=$((existing + 1))
+        continue
+    fi
+
+    # URL fresca por episodio
+    echo "Obteniendo URL del episodio $ep..."
+    capi="$ep"
+    scrape_episode "$base_url/$ep"
+
+    # Limpieza de los temporales del wget
+    rm -r jkanime.net mediafire.com > /dev/null 2>&1
+
+    if [[ -z "$src_contenido" ]]; then
+        echo -e "${RED}No se pudo obtener la URL del episodio $ep.${NC}"
+        failed=$((failed + 1))
+        failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
+        continue
+    fi
+
+    download_episode "$anime" "$ep" "$src_contenido"
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+        failed=$((failed + 1))
+        failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
+    else
+        # Distinguir si era ya existente (download_episode devuelve 0 tambien al omitir)
+        if [[ -f "$out_path" ]] && ffprobe -v error "$out_path" >/dev/null 2>&1; then
+            # Si tras la llamada sigue siendo el mismo archivo preexistente lo
+            # contamos como existing; download_episode ya lo habra anunciado.
+            :
+        fi
+        downloaded=$((downloaded + 1))
+    fi
+done
+
+echo ""
+echo "===================================="
+echo "      DESCARGA COMPLETADA"
+echo "===================================="
+echo ""
+echo "Anime: $anime"
+echo "Temporada: 1"
+echo ""
+echo "Descargados: $downloaded"
+echo "Ya existentes: $existing"
+echo "Fallidos: $failed"
+echo "Total: $((downloaded + existing + failed))"
+
+if [[ $failed -gt 0 ]]; then
+    echo ""
+    echo "Episodios con error:"
+    printf "%b" "$failed_eps"
+fi
+}
+
+# ----------------------------------------------------------------------------
+# Menu de accion tras seleccionar episodio.
+# En modo descarga (-d) se oculta "Reproducir".
+# ----------------------------------------------------------------------------
+if [[ "$DOWNLOAD_MODE" == 1 ]]; then
+    opciones_accion=("Descargar episodio" "Descargar temporada" "Atrás")
+else
+    opciones_accion=("Reproducir" "Descargar episodio" "Descargar temporada" "Atrás")
+fi
+
+accion=$(printf "%s\n" "${opciones_accion[@]}" | tac | fzf --prompt="Acción: " --height=~12 --border --info=inline --margin=1,1,0,0)
+clear
+
+case "$accion" in
+    "Reproducir")
+        videocap "$capurl"
+        ;;
+
+    "Descargar episodio")
+        if ! check_download_deps; then
+            read -rp "Pulsa Enter para volver al menú..."
+            main
+        fi
+
+        # Numero de episodio real para el nombre de archivo
+        if [ "$tipo" == "Pelicula" ]; then
+            ep_num=1
+        else
+            ep_num="$capi"
+        fi
+
+        echo "Obteniendo URL del episodio..."
+        scrape_episode "$capurl"
+        rm -r jkanime.net mediafire.com > /dev/null 2>&1
+
+        if [[ -z "$src_contenido" ]]; then
+            echo -e "${RED}No se pudo obtener la URL del video.${NC}"
+            read -rp "Pulsa Enter para continuar..."
+            main
+        fi
+
+        echo -e "${CYAN}URL obtenida:${NC} $src_contenido"
+        echo ""
+        download_episode "$titulo_elegido" "$ep_num" "$src_contenido"
+        echo ""
+        read -rp "Pulsa Enter para continuar..."
+        main
+        ;;
+
+    "Descargar temporada")
+        if ! check_download_deps; then
+            read -rp "Pulsa Enter para volver al menú..."
+            main
+        fi
+
+        # Para peliculas no tiene sentido "temporada": se descarga el unico ep.
+        if [ "$tipo" == "Pelicula" ]; then
+            echo "Obteniendo URL del episodio..."
+            scrape_episode "$capurl"
+            rm -r jkanime.net mediafire.com > /dev/null 2>&1
+            if [[ -n "$src_contenido" ]]; then
+                download_episode "$titulo_elegido" 1 "$src_contenido"
+            else
+                echo -e "${RED}No se pudo obtener la URL del video.${NC}"
+            fi
+            read -rp "Pulsa Enter para continuar..."
+            main
+        fi
+
+        download_season "$titulo_elegido" 1 "$num_episodios" "$nuevaurl"
+        echo ""
+        read -rp "Pulsa Enter para continuar..."
+        main
+        ;;
+
+    "Atrás"|"Atras")
+        main
+        ;;
+
+    *)
+        main
+        ;;
+esac
 }
 
 
