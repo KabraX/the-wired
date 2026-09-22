@@ -347,24 +347,60 @@ download_episode() {
 
 main() {
 
+# Auto-update
+
+
 urlo="https://raw.githubusercontent.com/KabraX/the-wired/refs/heads/main/the-wired"
+
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 ARCHIVO="$SCRIPT_DIR/the-wired"
 
-echo -e ${BLUE}Verificando actualizaciones disponibles...${NC}
-actualizado=$(curl -s "$urlo")
-actual=$(cat "$ARCHIVO")
+# Si el script está dentro de un repositorio Git, asumimos que estamos
+# trabajando en desarrollo y no hacemos auto-update.
+if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
 
-update="$(curl -s "https://raw.githubusercontent.com/KabraX/the-wired/refs/heads/main/the-wired")"
-if [ "$update" != "$(cat "$ARCHIVO")" ]; then
-    echo -n -e "${CYAN}Hay una actualizacion disponible se recomienda actualizar para garantizar que el script funcine correctamente (y/n) ${NC}"
-    read ele
-    if [ "$ele" == "y" ];then
-    diff -u "$ARCHIVO" <(echo "$update") | sudo patch "$ARCHIVO" > /dev/null 2>&1 && echo -e "${CYAN}El script ha sido actualizado${NC}" || echo -e "${RED}Ha ocurrido un error mientras se actualizaba el script${NC}"
-    exit 0
-    fi
+    echo -e "${BLUE}Modo desarrollo detectado. Omitiendo verificación de actualizaciones.${NC}"
+
 else
-    echo "Script actualizado"
+
+    echo -e "${BLUE}Verificando actualizaciones disponibles...${NC}"
+
+    # Descargar la versión remota.
+    update=$(curl -fsSL --connect-timeout 5 --max-time 15 "$urlo")
+
+    # Comprobar que la descarga fue correcta.
+    if [[ $? -ne 0 || -z "$update" ]]; then
+
+        echo -e "${YELLOW}No se pudo comprobar si existe una actualización.${NC}"
+
+    # Comparar la versión remota con la instalada.
+    elif [[ "$update" != "$(cat "$ARCHIVO")" ]]; then
+
+        echo -n -e "${CYAN}Hay una actualización disponible. ¿Deseas actualizar? (y/n) ${NC}"
+        read -r ele
+
+        if [[ "$ele" == "y" ]]; then
+
+            if diff -u "$ARCHIVO" <(printf '%s\n' "$update") \
+                | sudo patch "$ARCHIVO" > /dev/null 2>&1; then
+
+                echo -e "${GREEN}El script ha sido actualizado correctamente.${NC}"
+
+            else
+
+                echo -e "${RED}Ha ocurrido un error mientras se actualizaba el script.${NC}"
+
+            fi
+
+            exit 0
+        fi
+
+    else
+
+        echo -e "${GREEN}Script actualizado.${NC}"
+
+    fi
+
 fi
 
 clear
@@ -720,65 +756,299 @@ fi
 
 capurl="$nuevaurl/$capi"
 
-
 # ----------------------------------------------------------------------------
 # scrape_episode: extrae UNICAMENTE el scraping del episodio.
 # No reproduce ni muestra menus. Rellena la variable global src_contenido
 # con la URL fresca del stream (.m3u8 o directo).
-# $1 = URL completa del episodio (ej: https://jkanime.net/<anime>/<ep>)
-# Usa $capi (numero/etiqueta de episodio) y $url_without_https del ambito de main.
+#
+# $1 = URL completa del episodio
+#
+# Métodos soportados:
+#   1. jkplayer (actual)
+#   2. jk.php (legacy)
+#   3. Mediafire (legacy)
 # ----------------------------------------------------------------------------
-scrape_episode(){
-local capa="$1"
+scrape_episode() {
+    local capa="$1"
+    local tmp_dir
+    local main_html
+    local jkplayer_html
+    local jkplayer_path
+    local jkplayer_url
+    local jkphp_path
+    local jkphp_url
+    local jkphp_html
+    local servers_file
+    local mediafire_url
+    local mediafire_html
+    local domain
+    local ua
+    local wget_rc
 
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p "$capa" > /dev/null 2>&1
+    src_contenido=""
 
-primera_carpeta=$(ls -d jkanime.net/*/ 2> /dev/null | head -n 1)
-primera_carpeta="${primera_carpeta%/}"
-pes=$(find "$primera_carpeta/" -maxdepth 1 -type f -printf "%f\n" | head -n 1)
-archivor="${url_without_https}/${capi}"
-archivor="${archivor//\/\//\/}"
+    ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
-tre=$(grep -oP '<iframe[^>]+src="/jk.php\K[^"]*' "$archivor")
-# jkplayer (nuevo)
-if ls jkanime.net/jkplayer/um* 1> /dev/null 2>&1; then
-  src_contenido=$(grep -A 1 "video: {" jkanime.net/jkplayer/um* | sed -n -e "s/.*url: '\(.*\)',.*/\1/p" -e "s/.*type: '\(.*\)'.*/\1/p")
+    echo -e "${CYAN}[Scraper] Episodio: $capa${NC}"
+    echo -e "${CYAN}[Scraper] Descargando página...${NC}"
 
-# jk.php (antiguo) por si acaso
-elif ls jkanime.net/jk.php* 1> /dev/null 2>&1; then
-  wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p "$tre" > /dev/null 2>&1
-  src_contenido=$(grep -A 1 "video: {" jkanime.net/jk.php* | sed -n -e "s/.*url: '\(.*\)',.*/\1/p" -e "s/.*type: '\(.*\)'.*/\1/p")
+    tmp_dir=$(mktemp -d)
+    main_html="$tmp_dir/main.html"
 
-# Mediafire
-else
-  servers_line=$(grep -oP 'var servers = \[.*?\];' "$archivor")
+    # ------------------------------------------------------------------------
+    # 1. Página principal del episodio
+    # ------------------------------------------------------------------------
 
-  if [ -n "$servers_line" ]; then
-    src_contenid=$(python3 - <<END
-import json
-import base64
+    wget \
+        --user-agent="$ua" \
+        -O "$main_html" \
+        "$capa" \
+        > /dev/null \
+        2>"$tmp_dir/wget_main.log"
+
+    wget_rc=$?
+
+    if [[ $wget_rc -ne 0 || ! -s "$main_html" ]]; then
+        echo -e "${RED}[Scraper] No se pudo descargar la página principal.${NC}"
+
+        if [[ -s "$tmp_dir/wget_main.log" ]]; then
+            echo -e "${RED}[Scraper] wget:${NC}"
+            sed 's/^/  /' "$tmp_dir/wget_main.log"
+        fi
+
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    echo -e "${GREEN}[Scraper] Página principal descargada.${NC}"
+
+    domain=$(grep -oP '^https?://[^/]+' <<< "$capa")
+
+    # =========================================================================
+    # 2. JKPLAYER — método actual
+    # =========================================================================
+
+    echo -e "${CYAN}[Scraper] Buscando reproductor jkplayer...${NC}"
+
+    jkplayer_path=$(grep -oP '(?<=jkplayer/)um[^"'"'"'<> ]*' "$main_html" | head -n 1)
+
+    if [[ -n "$jkplayer_path" ]]; then
+
+        echo -e "${GREEN}[Scraper] Referencia jkplayer encontrada.${NC}"
+
+        jkplayer_url="${domain}/jkplayer/${jkplayer_path}"
+        jkplayer_html="$tmp_dir/jkplayer.html"
+
+        echo -e "${CYAN}[Scraper] Descargando recurso jkplayer...${NC}"
+
+        wget \
+            --user-agent="$ua" \
+            -O "$jkplayer_html" \
+            "$jkplayer_url" \
+            > /dev/null \
+            2>"$tmp_dir/wget_jkplayer.log"
+
+        if [[ -s "$jkplayer_html" ]]; then
+
+            # Soporta:
+            #   url: 'https://...'
+            #   url: atob('...')
+            src_contenido=$(grep -A 3 "video: {" "$jkplayer_html" | sed -n \
+                -e "s/.*url: '\(http[^']*\)'.*/\1/p" \
+                -e "s/.*url: atob('\([^']*\)').*/\1/p" \
+                -e "s/.*url: '\([^']*\)',.*/\1/p" \
+                | head -n 1)
+
+            # Si lo extraído parece Base64, decodificarlo.
+            if [[ -n "$src_contenido" && "$src_contenido" != http* ]]; then
+                local decoded_url
+                decoded_url=$(base64 -d <<< "$src_contenido" 2>/dev/null)
+
+                if [[ "$decoded_url" == http* ]]; then
+                    src_contenido="$decoded_url"
+                fi
+            fi
+
+            if [[ -n "$src_contenido" ]]; then
+                echo -e "${GREEN}[Scraper] URL encontrada mediante jkplayer.${NC}"
+                rm -rf "$tmp_dir"
+                return 0
+            fi
+
+            echo -e "${YELLOW}[Scraper] jkplayer fue encontrado, pero no se pudo extraer la URL.${NC}"
+
+        else
+            echo -e "${YELLOW}[Scraper] No se pudo descargar el recurso jkplayer.${NC}"
+        fi
+
+    else
+        echo -e "${YELLOW}[Scraper] No se encontró referencia a jkplayer.${NC}"
+    fi
+
+    # =========================================================================
+    # 3. JK.PHP — método legacy
+    # =========================================================================
+
+    echo -e "${CYAN}[Scraper] Probando reproductor jk.php legacy...${NC}"
+
+    # Extrae el parámetro/query después de /jk.php
+    jkphp_path=$(grep -oP '<iframe[^>]+src="/jk\.php\K[^"]*' "$main_html" | head -n 1)
+
+    if [[ -n "$jkphp_path" ]]; then
+
+        echo -e "${GREEN}[Scraper] Referencia jk.php encontrada.${NC}"
+
+        jkphp_url="${domain}/jk.php${jkphp_path}"
+        jkphp_html="$tmp_dir/jk.php.html"
+
+        echo -e "${CYAN}[Scraper] Descargando recurso jk.php...${NC}"
+
+        wget \
+            --user-agent="$ua" \
+            -O "$jkphp_html" \
+            "$jkphp_url" \
+            > /dev/null \
+            2>"$tmp_dir/wget_jkphp.log"
+
+        if [[ -s "$jkphp_html" ]]; then
+
+            src_contenido=$(grep -A 3 "video: {" "$jkphp_html" | sed -n \
+                -e "s/.*url: '\(http[^']*\)'.*/\1/p" \
+                -e "s/.*url: atob('\([^']*\)').*/\1/p" \
+                -e "s/.*url: '\([^']*\)',.*/\1/p" \
+                | head -n 1)
+
+            if [[ -n "$src_contenido" && "$src_contenido" != http* ]]; then
+                local decoded_url
+                decoded_url=$(base64 -d <<< "$src_contenido" 2>/dev/null)
+
+                if [[ "$decoded_url" == http* ]]; then
+                    src_contenido="$decoded_url"
+                fi
+            fi
+
+            if [[ -n "$src_contenido" ]]; then
+                echo -e "${GREEN}[Scraper] URL encontrada mediante jk.php.${NC}"
+                rm -rf "$tmp_dir"
+                return 0
+            fi
+
+            echo -e "${YELLOW}[Scraper] jk.php fue encontrado, pero no se pudo extraer la URL.${NC}"
+
+        else
+            echo -e "${YELLOW}[Scraper] No se pudo descargar el recurso jk.php.${NC}"
+        fi
+
+    else
+        echo -e "${YELLOW}[Scraper] No se encontró referencia a jk.php.${NC}"
+    fi
+
+    # =========================================================================
+    # 4. MEDIAFIRE — método legacy
+    # =========================================================================
+
+    echo -e "${CYAN}[Scraper] Buscando servidor Mediafire...${NC}"
+
+    servers_file="$tmp_dir/servers.txt"
+
+    # Extraemos "var servers = [...];" directamente desde el HTML.
+    # Se usa Python para soportar el caso donde el array ocupa varias líneas.
+    python3 - "$main_html" > "$servers_file" <<'PY'
 import re
+import sys
 
-data_string = '''$servers_line'''
-json_str = re.search(r'var servers = (.+?);', data_string).group(1)
-servers = json.loads(json_str)
+path = sys.argv[1]
 
-mp4upload_server = next(
-    (server for server in servers if server["server"] == "Mediafire"),
-    None
+with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    html = f.read()
+
+match = re.search(
+    r'var\s+servers\s*=\s*(\[.*?\]);',
+    html,
+    re.DOTALL
 )
 
-print(base64.b64decode(mp4upload_server['remote']).decode('utf-8'))
-END
-    )
+if match:
+    print(match.group(1))
+PY
 
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p "$src_contenid" > /dev/null 2>&1
-    index=$(find mediafire.com -type f -name "index.html")
-    src_contenido=$(grep -oP '(?<=href=")[^"]*' "$index" | grep 'https://download')
-  else
-    echo ""
-  fi
-fi
+    if [[ ! -s "$servers_file" ]]; then
+        echo -e "${YELLOW}[Scraper] No se encontró la variable servers.${NC}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    mediafire_url=$(python3 - "$servers_file" <<'PY'
+import json
+import base64
+import sys
+
+path = sys.argv[1]
+
+with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    servers = json.load(f)
+
+for server in servers:
+    if str(server.get("server", "")).lower() == "mediafire":
+        remote = server.get("remote")
+
+        if remote:
+            try:
+                print(base64.b64decode(remote).decode("utf-8"))
+            except Exception:
+                pass
+
+        break
+PY
+)
+
+    if [[ -z "$mediafire_url" ]]; then
+        echo -e "${YELLOW}[Scraper] No se encontró servidor Mediafire válido.${NC}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    echo -e "${GREEN}[Scraper] URL de Mediafire encontrada.${NC}"
+
+    mediafire_html="$tmp_dir/mediafire.html"
+
+    echo -e "${CYAN}[Scraper] Descargando página de Mediafire...${NC}"
+
+    wget \
+        --user-agent="$ua" \
+        --max-redirect=20 \
+        -O "$mediafire_html" \
+        "$mediafire_url" \
+        > /dev/null \
+        2>"$tmp_dir/wget_mediafire.log"
+
+    if [[ ! -s "$mediafire_html" ]]; then
+        echo -e "${RED}[Scraper] No se pudo descargar la página de Mediafire.${NC}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # Mediafire normalmente contiene el enlace real de descarga
+    # en un href que comienza por https://download...
+    src_contenido=$(grep -oP 'href="\Khttps://download[^"]+' "$mediafire_html" | head -n 1)
+
+    if [[ -z "$src_contenido" ]]; then
+        # Fallback para HTML donde el href no utiliza exactamente esa forma.
+        src_contenido=$(grep -oP 'https://download[^"'\'' ]+' "$mediafire_html" | head -n 1)
+    fi
+
+    if [[ -n "$src_contenido" ]]; then
+        echo -e "${GREEN}[Scraper] URL encontrada mediante Mediafire.${NC}"
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    echo -e "${RED}[Scraper] Mediafire fue encontrado, pero no se pudo extraer la URL de descarga.${NC}"
+
+    src_contenido=""
+
+    rm -rf "$tmp_dir"
+    return 1
 }
 
 # ----------------------------------------------------------------------------
