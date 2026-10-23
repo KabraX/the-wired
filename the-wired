@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 CONTINUE=0
 DOWNLOAD_MODE=0
@@ -27,7 +27,6 @@ BG_PURPLE='\033[45m'
 BG_CYAN='\033[46m'
 BG_WHITE='\033[47m'
 
-
 NC='\033[0m'
 
 HISTORY_DIR="$HOME/the-wired"
@@ -35,7 +34,6 @@ OLD_DB="$HISTORY_DIR/history.db"
 HISTORY_FILE="$HOME/the-wired/history.json"
 # Ruta legacy de ani-es para migracion automatica del historial
 LEGACY_HISTORY_FILE="$HOME/ani-es/history.json"
-
 
 init_history() {
 
@@ -47,7 +45,7 @@ init_history() {
         echo "Historial de ani-es migrado a the-wired."
     fi
 
-    [[ -f "$HISTORY_FILE" ]] || echo "{}" > "$HISTORY_FILE"
+    [[ -f "$HISTORY_FILE" ]] || echo "{}" >"$HISTORY_FILE"
 
     if [[ -f "$OLD_DB" ]]; then
 
@@ -130,13 +128,11 @@ get_last_cap() {
         "$HISTORY_FILE"
 }
 
-
 get_progress() {
     jq -r --arg anime "$1" \
         '.[$anime].progress // "00:00:00"' \
         "$HISTORY_FILE"
 }
-
 
 save_history() {
     local anime="$1"
@@ -153,11 +149,10 @@ save_history() {
             last_cap: ($cap|tonumber),
             progress: $progress
         }' \
-        "$HISTORY_FILE" > "$tmp"
+        "$HISTORY_FILE" >"$tmp"
 
     mv "$tmp" "$HISTORY_FILE"
 }
- 
 
 show_help() {
     echo ""
@@ -168,6 +163,9 @@ show_help() {
     echo "      -v, --version    Mostrar versión"
     echo "      -c, --continue   Continua el anime en donde ultimo lo dejaste"
     echo "      -d, --download   Modo descarga (oculta la opcion de reproducir)"
+    echo "      -u, --update     Buscar actualizaciones ahora (ignora el limite de una vez al dia)"
+    echo ""
+    echo "    Variables: THE_WIRED_NO_UPDATE=1 desactiva la busqueda automatica de actualizaciones"
     echo ""
 }
 
@@ -178,19 +176,22 @@ show_version() {
 # parseo de argumentos
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -h|--help)
+        -h | --help)
             show_help
             exit 0
             ;;
-        -v|--version)
+        -v | --version)
             show_version
             exit 0
             ;;
-        -c|--continue)
+        -c | --continue)
             CONTINUE=1
             ;;
-        -d|--download)
+        -d | --download)
             DOWNLOAD_MODE=1
+            ;;
+        -u | --update)
+            FORCE_UPDATE_CHECK=1
             ;;
         *)
             break
@@ -199,9 +200,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-
 arg1="$*"
-
 
 check_dependencies() {
     local script_name
@@ -209,7 +208,7 @@ check_dependencies() {
     local missing=()
 
     for cmd in "$@"; do
-        if ! command -v "$cmd" &> /dev/null; then
+        if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
     done
@@ -345,74 +344,105 @@ download_episode() {
     return 0
 }
 
-main() {
+# --- Actualizaciones -------------------------------------------------------
+# Compara el VERSION remoto (rama main de GitHub) con el local y solo ofrece
+# actualizar si el remoto es MAS NUEVO. Comprueba como mucho una vez al dia,
+# valida la sintaxis antes de instalar y reemplaza el archivo de forma atomica.
+UPDATE_URL="https://raw.githubusercontent.com/KabraX/the-wired/main/the-wired"
+UPDATE_STAMP="$HISTORY_DIR/.last_update_check"
+UPDATE_INTERVAL=86400
 
-# Auto-update
+check_update() {
+    local script_path script_dir remote_file remote_version now last=0
 
+    script_path=$(readlink -f "$0")
+    script_dir=$(dirname "$script_path")
 
-urlo="https://raw.githubusercontent.com/KabraX/the-wired/refs/heads/main/the-wired"
-
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-ARCHIVO="$SCRIPT_DIR/the-wired"
-
-# Si el script está dentro de un repositorio Git, asumimos que estamos
-# trabajando en desarrollo y no hacemos auto-update.
-if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-
-    echo -e "${BLUE}Modo desarrollo detectado. Omitiendo verificación de actualizaciones.${NC}"
-
-else
-
-    echo -e "${BLUE}Verificando actualizaciones disponibles...${NC}"
-
-    # Descargar la versión remota.
-    update=$(curl -fsSL --connect-timeout 5 --max-time 15 "$urlo")
-
-    # Comprobar que la descarga fue correcta.
-    if [[ $? -ne 0 || -z "$update" ]]; then
-
-        echo -e "${YELLOW}No se pudo comprobar si existe una actualización.${NC}"
-
-    # Comparar la versión remota con la instalada.
-    elif [[ "$update" != "$(cat "$ARCHIVO")" ]]; then
-
-        echo -n -e "${CYAN}Hay una actualización disponible. ¿Deseas actualizar? (y/n) ${NC}"
-        read -r ele
-
-        if [[ "$ele" == "y" ]]; then
-
-            if diff -u "$ARCHIVO" <(printf '%s\n' "$update") \
-                | sudo patch "$ARCHIVO" > /dev/null 2>&1; then
-
-                echo -e "${GREEN}El script ha sido actualizado correctamente.${NC}"
-
-            else
-
-                echo -e "${RED}Ha ocurrido un error mientras se actualizaba el script.${NC}"
-
-            fi
-
-            exit 0
-        fi
-
-    else
-
-        echo -e "${GREEN}Script actualizado.${NC}"
-
+    if [[ "${THE_WIRED_NO_UPDATE:-0}" == "1" ]]; then
+        return 0
     fi
 
-fi
+    # Instalado como clon de git: se actualiza con git, no reescribiendo el archivo
+    if git -C "$script_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if [[ "${FORCE_UPDATE_CHECK:-0}" == "1" ]]; then
+            echo -e "${BLUE}Instalado desde git: actualiza con ${CYAN}git -C \"$script_dir\" pull --ff-only${NC}"
+            exit 0
+        fi
+        return 0
+    fi
 
-clear
+    mkdir -p "$HISTORY_DIR"
+    now=$(date +%s)
+    [[ -f "$UPDATE_STAMP" ]] && last=$(cat "$UPDATE_STAMP" 2>/dev/null || echo 0)
+    if [[ "${FORCE_UPDATE_CHECK:-0}" != "1" ]] && ((now - last < UPDATE_INTERVAL)); then
+        return 0
+    fi
+    echo "$now" >"$UPDATE_STAMP"
 
-check_dependencies wget fzf grep sed python3 mpv jq curl
+    echo -e "${BLUE}Verificando actualizaciones...${NC}"
+    remote_file=$(mktemp) || return 0
+    if ! curl -fsSL --connect-timeout 5 --max-time 15 "$UPDATE_URL" -o "$remote_file"; then
+        echo -e "${YELLOW}No se pudo comprobar si hay actualizaciones.${NC}"
+        rm -f "$remote_file"
+        return 0
+    fi
 
-pagina_siguiente() {
+    remote_version=$(grep -m1 -oE '^VERSION="[^"]+"' "$remote_file" | cut -d'"' -f2)
+    if [[ -z "$remote_version" ]] || ! head -1 "$remote_file" | grep -q '^#!/bin/bash'; then
+        echo -e "${YELLOW}La version remota no parece valida; se omite.${NC}"
+        rm -f "$remote_file"
+        return 0
+    fi
 
-clear 
-  local url=$1
+    # Solo si el remoto es estrictamente mas nuevo (sort -V entiende 1.10 > 1.9)
+    if [[ "$remote_version" == "$VERSION" ]] ||
+        [[ "$(printf '%s\n%s\n' "$VERSION" "$remote_version" | sort -V | tail -1)" != "$remote_version" ]]; then
+        [[ "${FORCE_UPDATE_CHECK:-0}" == "1" ]] && echo -e "${GREEN}Ya tienes la ultima version (v$VERSION).${NC}"
+        rm -f "$remote_file"
+        return 0
+    fi
 
-new_urls=$(python3 - <<END
+    if ! bash -n "$remote_file" 2>/dev/null; then
+        echo -e "${RED}La version v$remote_version tiene errores de sintaxis; no se instala.${NC}"
+        rm -f "$remote_file"
+        return 0
+    fi
+
+    echo -n -e "${CYAN}Hay una version nueva: v$VERSION -> v$remote_version. ¿Actualizar? (y/n) ${NC}"
+    read -r ele
+    if [[ "$ele" != "y" ]]; then
+        rm -f "$remote_file"
+        return 0
+    fi
+
+    chmod 755 "$remote_file"
+    if [[ -w "$script_dir" ]]; then
+        # mv dentro del mismo sistema de archivos es atomico
+        cp "$remote_file" "$script_path.new" && mv -f "$script_path.new" "$script_path"
+    else
+        sudo install -m 755 "$remote_file" "$script_path"
+    fi && echo -e "${GREEN}Actualizado a v$remote_version. Vuelve a ejecutar the-wired.${NC}" ||
+        echo -e "${RED}No se pudo instalar la actualizacion.${NC}"
+
+    rm -f "$remote_file"
+    exit 0
+}
+
+main() {
+
+    check_update
+
+    clear
+
+    check_dependencies wget fzf grep sed python3 mpv jq curl
+
+    pagina_siguiente() {
+
+        clear
+        local url=$1
+
+        new_urls=$(
+            python3 - <<END
 
 try:
   url = "$url"
@@ -430,9 +460,10 @@ try:
 except:
  x=1+1
 END
-)
+        )
 
-new_dict=$(python3 - <<END
+        new_dict=$(
+            python3 - <<END
 try:
   url = "$url"
 
@@ -450,9 +481,10 @@ try:
 except:
  x=1+1
 END
-)
+        )
 
-new_number=$(python3 - <<END
+        new_number=$(
+            python3 - <<END
 try:
   url = "$url"
 
@@ -465,44 +497,47 @@ try:
 except:
  x=1+1
 END
-)
+        )
 
+        rm -r jkanime.net
 
-rm -r jkanime.net
+        wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $new_urls wget >/dev/null 2>&1
 
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $new_urls wget > /dev/null 2>&1
+        rm -r resultados.txt
 
-rm -r resultados.txt
+        grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' $new_dict >resultados.txt
 
-grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' $new_dict > resultados.txt
+        num_resultados=$(wc -l <resultados.txt)
 
+        echo -e "Pagina: $new_number ${NC}"
 
-num_resultados=$(wc -l < resultados.txt)
+        echo -e "Resultados para: $query"
 
-echo -e "Pagina: $new_number ${NC}"
+        opcion=$( (
+            cat "resultados.txt"
+            echo -e "Siguiente"
+            echo "Anterior"
+            echo "Salir"
+        ) | tac | fzf --prompt="Selecciona una opción: " --height=19 --border --info=inline --margin=1,1,0,0)
 
-echo -e "Resultados para: $query"
+        if [[ "$opcion" == "Siguiente" ]]; then
+            pagina_siguiente $new_urls
+        elif [[ "$opcion" == "Anterior" ]]; then
+            pagina_anterior $new_urls
+        elif [[ "$opcion" == "Salir" ]]; then
+            clear
+            main
+        fi
 
-opcion=$( (cat "resultados.txt"; echo -e "Siguiente"; echo "Anterior"; echo "Salir") | tac | fzf --prompt="Selecciona una opción: " --height=19 --border --info=inline --margin=1,1,0,0)
+    }
 
+    pagina_anterior() {
 
-if [[ "$opcion" == "Siguiente" ]]; then
-  pagina_siguiente $new_urls
-elif [[ "$opcion" == "Anterior" ]]; then
-  pagina_anterior $new_urls
-elif [[ "$opcion" == "Salir" ]]; then
-  clear
-  main
-fi
+        clear
+        local url=$1
 
-}
-
-pagina_anterior() {
-
-clear 
-  local url=$1
-
-new_urls=$(python3 - <<END
+        new_urls=$(
+            python3 - <<END
 
 try:
   url = "$url"
@@ -520,9 +555,10 @@ try:
 except:
  x=1+1
 END
-)
+        )
 
-new_dict=$(python3 - <<END
+        new_dict=$(
+            python3 - <<END
 try:
   url = "$url"
 
@@ -540,9 +576,10 @@ try:
 except:
  x=1+1
 END
-)
+        )
 
-new_number=$(python3 - <<END
+        new_number=$(
+            python3 - <<END
 try:
   url = "$url"
 
@@ -555,405 +592,392 @@ try:
 except:
  x=1+1
 END
-)
+        )
 
+        rm -r jkanime.net
 
-rm -r jkanime.net
+        wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $new_urls wget >/dev/null 2>&1
 
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $new_urls wget > /dev/null 2>&1
+        rm -r resultados.txt
 
-rm -r resultados.txt
+        grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' $new_dict >resultados.txt
 
-grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' $new_dict > resultados.txt
+        num_resultados=$(wc -l <resultados.txt)
 
+        echo -e "Pagina: $new_number ${NC}"
+        echo -e "Resultados para: $query"
+        opcion=$( (
+            cat "resultados.txt"
+            echo "Siguiente"
+            echo "Anterior"
+            echo "Salir"
+        ) | tac | fzf --prompt="Selecciona una opción: " --height=19 --border --info=inline --margin=1,1,0,0)
 
-num_resultados=$(wc -l < resultados.txt)
+        if [[ "$opcion" == "Siguiente" ]]; then
+            pagina_siguiente $new_urls
+        elif [[ "$opcion" == "Anterior" ]]; then
+            pagina_anterior $new_urls
+        elif [[ "$opcion" == "Salir" ]]; then
+            clear
+            main
+        fi
 
-echo -e "Pagina: $new_number ${NC}"
-echo -e "Resultados para: $query"
-opcion=$( (cat "resultados.txt"; echo "Siguiente"; echo "Anterior"; echo "Salir") | tac | fzf --prompt="Selecciona una opción: " --height=19 --border --info=inline --margin=1,1,0,0)
+    }
 
+    if [[ -z "$arg1" ]]; then
+        read -p "Buscar Anime: " oracion
+        clear
+    else
+        oracion="$arg1"
+    fi
 
-if [[ "$opcion" == "Siguiente" ]]; then
-  pagina_siguiente $new_urls
-elif [[ "$opcion" == "Anterior" ]]; then
-  pagina_anterior $new_urls
-elif [[ "$opcion" == "Salir" ]]; then
-  clear
-  main
-fi
+    query=$(echo $oracion | tr ' ' '_')
 
-}
+    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p https://jkanime.net/buscar/$query/ >/dev/null 2>&1
 
-if [[ -z "$arg1" ]]; then
-  read -p "Buscar Anime: " oracion
-  clear
-else
-  oracion="$arg1"
-fi
+    input_file="jkanime.net/buscar/$query/index.html"
 
+    if [[ ! -f $input_file ]]; then
+        echo "Archivo $input_file no encontrado."
+        exit 1
+    fi
 
-query=$(echo $oracion | tr ' ' '_')
+    grep -oP '<h5><a\s+href="[^"]*">\K.*?(?=</a></h5>)' $input_file | sed 's/&quot;//g' >resultados.txt
 
+    num_resultados=$(wc -l <resultados.txt)
 
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p https://jkanime.net/buscar/$query/ > /dev/null 2>&1
+    num_animes=$(wc -l <resultados.txt)
+    if [[ "$num_animes" == "1" ]]; then
+        opcion=$(cat resultados.txt)
+        echo Cargando...
+    else
+        echo -e "Pagina: 1 ${NC}"
 
+        echo -e "Resultados para: $query"
+        opcion=$( (
+            cat "resultados.txt"
+            echo "Salir"
+        ) | tac | fzf --prompt="Selecciona una opción: " --height=~20 --border --info=inline --margin=1,1,0,0)
+        clear
+    fi
 
-input_file="jkanime.net/buscar/$query/index.html"
+    if [[ "$opcion" == "Siguiente" ]]; then
+        pagina_siguiente "https://jkanime.net/buscar/$query/"
+    elif [[ "$opcion" == "Anterior" ]]; then
+        pagina_anterior "https://jkanime.net/buscar/$query/"
+    elif [[ "$opcion" == "Salir" ]]; then
+        main
+    fi
 
+    clear
 
-if [[ ! -f $input_file ]]; then
-  echo "Archivo $input_file no encontrado."
-  exit 1
-fi
+    titulo_elegido=$opcion
 
-grep -oP '<h5><a\s+href="[^"]*">\K.*?(?=</a></h5>)' $input_file | sed 's/&quot;//g' > resultados.txt
+    quer=$(echo "$titulo_elegido" | tr -cd '[:alnum:] -')
+    quer=$(echo $quer | tr ' ' '-')
+    qee=$(echo "$quer" | tr '[:upper:]' '[:lower:]')
+    nuevaurl="https://jkanime.net/$qee"
 
+    echo Cargando...
 
+    JSON_URL="https://zhuchii.github.io/ani-es/excepciones.json"
 
-num_resultados=$(wc -l < resultados.txt)
+    value=$(curl -s "$JSON_URL")
 
+    if [ -n "$value" ] && [ "$value" != "null" ]; then
 
-num_animes=$(wc -l < resultados.txt)
-if [[ "$num_animes" == "1" ]]; then
-  opcion=$(cat resultados.txt)
-  echo Cargando...
-else
-  echo -e "Pagina: 1 ${NC}"
+        extracted_value=$(echo "$value" | jq -r --arg url "$nuevaurl" '.[$url]')
 
-  echo -e "Resultados para: $query"
-  opcion=$( (cat "resultados.txt"; echo "Salir") | tac | fzf --prompt="Selecciona una opción: " --height=~20 --border --info=inline --margin=1,1,0,0)
-  clear
-fi
-
-if [[ "$opcion" == "Siguiente" ]]; then
-  pagina_siguiente "https://jkanime.net/buscar/$query/"
-elif [[ "$opcion" == "Anterior" ]]; then
-  pagina_anterior "https://jkanime.net/buscar/$query/"
-elif [[ "$opcion" == "Salir" ]]; then
-  main
-fi
-
-clear
-
-titulo_elegido=$opcion
-
-quer=$(echo "$titulo_elegido" | tr -cd '[:alnum:] -')
-quer=$(echo $quer| tr ' ' '-')
-qee=$(echo "$quer" | tr '[:upper:]' '[:lower:]')
-nuevaurl="https://jkanime.net/$qee"
-
-
-
-echo Cargando...
-
-JSON_URL="https://zhuchii.github.io/ani-es/excepciones.json"
-
-
-value=$(curl -s "$JSON_URL")
-
-if [ -n "$value" ] && [ "$value" != "null" ]; then
-
-
-    extracted_value=$(echo "$value" | jq -r --arg url "$nuevaurl" '.[$url]')
-
-    if [ -n "$extracted_value" ] && [ "$extracted_value" != "null" ]; then
-        nuevaurl=$extracted_value
+        if [ -n "$extracted_value" ] && [ "$extracted_value" != "null" ]; then
+            nuevaurl=$extracted_value
+        else
+            echo ""
+        fi
     else
         echo ""
     fi
-else
-    echo ""
-fi
-nuevaurl="${nuevaurl%%/}"
-rm -r jkanime.net > /dev/null 2>&1
+    nuevaurl="${nuevaurl%%/}"
+    rm -r jkanime.net >/dev/null 2>&1
 
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $nuevaurl > /dev/null 2>&1
+    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $nuevaurl >/dev/null 2>&1
 
-url_without_https="${nuevaurl/https:\/\//}"
+    url_without_https="${nuevaurl/https:\/\//}"
 
-if [ -d "$url_without_https" ]; then
-    token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
-    api_url_base=$(grep -oP "url:\s*'\Khttps://jkanime\.net/ajax/episodes/\d+/?" "$url_without_https/index.html")
+    if [ -d "$url_without_https" ]; then
+        token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
+        api_url_base=$(grep -oP "url:\s*'\Khttps://jkanime\.net/ajax/episodes/\d+/?" "$url_without_https/index.html")
 
-    if [ ! -z "$api_url_base" ] && [ ! -z "$token" ]; then
-        
-        json_response=$(curl -s -X POST "${api_url_base}" \
-            -b cookies.txt \
-            -H "X-Requested-With: XMLHttpRequest" \
-            -H "X-CSRF-TOKEN: $token" \
-            --data-urlencode "_token=$token")
-        
-        num_episodios=$(echo "$json_response" | grep -oP '"total":\s*\K\d+')
-    fi
-else
-    token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
-    api_url_base=$(grep -oP "url:\s*'\Khttps://jkanime\.net/ajax/episodes/\d+/?" "$url_without_https")
+        if [ ! -z "$api_url_base" ] && [ ! -z "$token" ]; then
 
-    if [ ! -z "$api_url_base" ] && [ ! -z "$token" ]; then
-        
-        json_response=$(curl -s -X POST "${api_url_base}" \
-            -b cookies.txt \
-            -H "X-Requested-With: XMLHttpRequest" \
-            -H "X-CSRF-TOKEN: $token" \
-            --data-urlencode "_token=$token")
+            json_response=$(curl -s -X POST "${api_url_base}" \
+                -b cookies.txt \
+                -H "X-Requested-With: XMLHttpRequest" \
+                -H "X-CSRF-TOKEN: $token" \
+                --data-urlencode "_token=$token")
 
-        num_episodios=$(echo "$json_response" | grep -oP '"total":\s*\K\d+')
-    fi
-fi
-
-[ -f cookies.txt ] && rm cookies.txt
-
-clear
-echo -e "Anime: $GREEN $titulo_elegido $WHITE"
-
-last_cap=$(get_last_cap "$titulo_elegido")
-
-
-if [ -d "$url_without_https" ]; then
-    tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https/index.html | tail -n 1)
-else
-    tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https | tail -n 1)
-fi
-
-
-
-echo -e "Ultimo episodio visto: $last_cap"
-
-
-CONTENIDO=$(curl -s -L "$nuevaurl")
-
-if [ -z "$num_episodios" ]; then
-    num_episodios=0
-fi
-
-if [ -z "$num_episodios" ]; then
-  echo -e "Enlace ${CYAN}$nuevaurl${NC} no válido. Por favor ve a ${GREEN} https://github.com/KabraX/the-wired ${NC} y abre un issue especificando el enlace y el anime que estabas intentando ver. Lo corregiré y actualizaré el script ;)"
-  echo "$url_without_https"
-  exit
-fi
-
-
-
-if [ "$CONTINUE" == 1 ]; then
-  capi=$last_cap
-  progress=$(get_progress "$titulo_elegido")
-
-else
-  capi=$(seq 1 "$num_episodios" | fzf \
-    --prompt="Episodio: " \
-    --height=~30 \
-    --border \
-    --reverse)
-fi
-
-clear
-
-if [ "$tipo" == "Pelicula" ]; then
-  capi="pelicula"
-fi
-
-
-capurl="$nuevaurl/$capi"
-
-# ----------------------------------------------------------------------------
-# scrape_episode: extrae UNICAMENTE el scraping del episodio.
-# No reproduce ni muestra menus. Rellena la variable global src_contenido
-# con la URL fresca del stream (.m3u8 o directo).
-#
-# $1 = URL completa del episodio
-#
-# Métodos soportados:
-#   1. jkplayer (actual)
-#   2. jk.php (legacy)
-#   3. Mediafire (legacy)
-# ----------------------------------------------------------------------------
-scrape_episode() {
-    local capa="$1"
-    local tmp_dir
-    local main_html
-    local jkplayer_html
-    local jkplayer_path
-    local jkplayer_url
-    local jkphp_path
-    local jkphp_url
-    local jkphp_html
-    local servers_file
-    local mediafire_url
-    local mediafire_html
-    local domain
-    local ua
-    local wget_rc
-
-    src_contenido=""
-
-    ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-
-    echo -e "${CYAN}[Scraper] Episodio: $capa${NC}"
-    echo -e "${CYAN}[Scraper] Descargando página...${NC}"
-
-    tmp_dir=$(mktemp -d)
-    main_html="$tmp_dir/main.html"
-
-    # ------------------------------------------------------------------------
-    # 1. Página principal del episodio
-    # ------------------------------------------------------------------------
-
-    wget \
-        --user-agent="$ua" \
-        -O "$main_html" \
-        "$capa" \
-        > /dev/null \
-        2>"$tmp_dir/wget_main.log"
-
-    wget_rc=$?
-
-    if [[ $wget_rc -ne 0 || ! -s "$main_html" ]]; then
-        echo -e "${RED}[Scraper] No se pudo descargar la página principal.${NC}"
-
-        if [[ -s "$tmp_dir/wget_main.log" ]]; then
-            echo -e "${RED}[Scraper] wget:${NC}"
-            sed 's/^/  /' "$tmp_dir/wget_main.log"
+            num_episodios=$(echo "$json_response" | grep -oP '"total":\s*\K\d+')
         fi
+    else
+        token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
+        api_url_base=$(grep -oP "url:\s*'\Khttps://jkanime\.net/ajax/episodes/\d+/?" "$url_without_https")
 
-        rm -rf "$tmp_dir"
-        return 1
+        if [ ! -z "$api_url_base" ] && [ ! -z "$token" ]; then
+
+            json_response=$(curl -s -X POST "${api_url_base}" \
+                -b cookies.txt \
+                -H "X-Requested-With: XMLHttpRequest" \
+                -H "X-CSRF-TOKEN: $token" \
+                --data-urlencode "_token=$token")
+
+            num_episodios=$(echo "$json_response" | grep -oP '"total":\s*\K\d+')
+        fi
     fi
 
-    echo -e "${GREEN}[Scraper] Página principal descargada.${NC}"
+    [ -f cookies.txt ] && rm cookies.txt
 
-    domain=$(grep -oP '^https?://[^/]+' <<< "$capa")
+    clear
+    echo -e "Anime: $GREEN $titulo_elegido $WHITE"
 
-    # =========================================================================
-    # 2. JKPLAYER — método actual
-    # =========================================================================
+    last_cap=$(get_last_cap "$titulo_elegido")
 
-    echo -e "${CYAN}[Scraper] Buscando reproductor jkplayer...${NC}"
+    if [ -d "$url_without_https" ]; then
+        tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https/index.html | tail -n 1)
+    else
+        tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https | tail -n 1)
+    fi
 
-    jkplayer_path=$(grep -oP '(?<=jkplayer/)um[^"'"'"'<> ]*' "$main_html" | head -n 1)
+    echo -e "Ultimo episodio visto: $last_cap"
 
-    if [[ -n "$jkplayer_path" ]]; then
+    CONTENIDO=$(curl -s -L "$nuevaurl")
 
-        echo -e "${GREEN}[Scraper] Referencia jkplayer encontrada.${NC}"
+    if [ -z "$num_episodios" ]; then
+        num_episodios=0
+    fi
 
-        jkplayer_url="${domain}/jkplayer/${jkplayer_path}"
-        jkplayer_html="$tmp_dir/jkplayer.html"
+    if [ -z "$num_episodios" ]; then
+        echo -e "Enlace ${CYAN}$nuevaurl${NC} no válido. Por favor ve a ${GREEN} https://github.com/KabraX/the-wired ${NC} y abre un issue especificando el enlace y el anime que estabas intentando ver. Lo corregiré y actualizaré el script ;)"
+        echo "$url_without_https"
+        exit
+    fi
 
-        echo -e "${CYAN}[Scraper] Descargando recurso jkplayer...${NC}"
+    if [ "$CONTINUE" == 1 ]; then
+        capi=$last_cap
+        progress=$(get_progress "$titulo_elegido")
+
+    else
+        capi=$(seq 1 "$num_episodios" | fzf \
+            --prompt="Episodio: " \
+            --height=~30 \
+            --border \
+            --reverse)
+    fi
+
+    clear
+
+    if [ "$tipo" == "Pelicula" ]; then
+        capi="pelicula"
+    fi
+
+    capurl="$nuevaurl/$capi"
+
+    # ----------------------------------------------------------------------------
+    # scrape_episode: extrae UNICAMENTE el scraping del episodio.
+    # No reproduce ni muestra menus. Rellena la variable global src_contenido
+    # con la URL fresca del stream (.m3u8 o directo).
+    #
+    # $1 = URL completa del episodio
+    #
+    # Métodos soportados:
+    #   1. jkplayer (actual)
+    #   2. jk.php (legacy)
+    #   3. Mediafire (legacy)
+    # ----------------------------------------------------------------------------
+    scrape_episode() {
+        local capa="$1"
+        local tmp_dir
+        local main_html
+        local jkplayer_html
+        local jkplayer_path
+        local jkplayer_url
+        local jkphp_path
+        local jkphp_url
+        local jkphp_html
+        local servers_file
+        local mediafire_url
+        local mediafire_html
+        local domain
+        local ua
+        local wget_rc
+
+        src_contenido=""
+
+        ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+        echo -e "${CYAN}[Scraper] Episodio: $capa${NC}"
+        echo -e "${CYAN}[Scraper] Descargando página...${NC}"
+
+        tmp_dir=$(mktemp -d)
+        main_html="$tmp_dir/main.html"
+
+        # ------------------------------------------------------------------------
+        # 1. Página principal del episodio
+        # ------------------------------------------------------------------------
 
         wget \
             --user-agent="$ua" \
-            -O "$jkplayer_html" \
-            "$jkplayer_url" \
-            > /dev/null \
-            2>"$tmp_dir/wget_jkplayer.log"
+            -O "$main_html" \
+            "$capa" \
+            >/dev/null \
+            2>"$tmp_dir/wget_main.log"
 
-        if [[ -s "$jkplayer_html" ]]; then
+        wget_rc=$?
 
-            # Soporta:
-            #   url: 'https://...'
-            #   url: atob('...')
-            src_contenido=$(grep -A 3 "video: {" "$jkplayer_html" | sed -n \
-                -e "s/.*url: '\(http[^']*\)'.*/\1/p" \
-                -e "s/.*url: atob('\([^']*\)').*/\1/p" \
-                -e "s/.*url: '\([^']*\)',.*/\1/p" \
-                | head -n 1)
+        if [[ $wget_rc -ne 0 || ! -s "$main_html" ]]; then
+            echo -e "${RED}[Scraper] No se pudo descargar la página principal.${NC}"
 
-            # Si lo extraído parece Base64, decodificarlo.
-            if [[ -n "$src_contenido" && "$src_contenido" != http* ]]; then
-                local decoded_url
-                decoded_url=$(base64 -d <<< "$src_contenido" 2>/dev/null)
-
-                if [[ "$decoded_url" == http* ]]; then
-                    src_contenido="$decoded_url"
-                fi
+            if [[ -s "$tmp_dir/wget_main.log" ]]; then
+                echo -e "${RED}[Scraper] wget:${NC}"
+                sed 's/^/  /' "$tmp_dir/wget_main.log"
             fi
 
-            if [[ -n "$src_contenido" ]]; then
-                echo -e "${GREEN}[Scraper] URL encontrada mediante jkplayer.${NC}"
-                rm -rf "$tmp_dir"
-                return 0
-            fi
-
-            echo -e "${YELLOW}[Scraper] jkplayer fue encontrado, pero no se pudo extraer la URL.${NC}"
-
-        else
-            echo -e "${YELLOW}[Scraper] No se pudo descargar el recurso jkplayer.${NC}"
+            rm -rf "$tmp_dir"
+            return 1
         fi
 
-    else
-        echo -e "${YELLOW}[Scraper] No se encontró referencia a jkplayer.${NC}"
-    fi
+        echo -e "${GREEN}[Scraper] Página principal descargada.${NC}"
 
-    # =========================================================================
-    # 3. JK.PHP — método legacy
-    # =========================================================================
+        domain=$(grep -oP '^https?://[^/]+' <<<"$capa")
 
-    echo -e "${CYAN}[Scraper] Probando reproductor jk.php legacy...${NC}"
+        # =========================================================================
+        # 2. JKPLAYER — método actual
+        # =========================================================================
 
-    # Extrae el parámetro/query después de /jk.php
-    jkphp_path=$(grep -oP '<iframe[^>]+src="/jk\.php\K[^"]*' "$main_html" | head -n 1)
+        echo -e "${CYAN}[Scraper] Buscando reproductor jkplayer...${NC}"
 
-    if [[ -n "$jkphp_path" ]]; then
+        jkplayer_path=$(grep -oP '(?<=jkplayer/)um[^"'"'"'<> ]*' "$main_html" | head -n 1)
 
-        echo -e "${GREEN}[Scraper] Referencia jk.php encontrada.${NC}"
+        if [[ -n "$jkplayer_path" ]]; then
 
-        jkphp_url="${domain}/jk.php${jkphp_path}"
-        jkphp_html="$tmp_dir/jk.php.html"
+            echo -e "${GREEN}[Scraper] Referencia jkplayer encontrada.${NC}"
 
-        echo -e "${CYAN}[Scraper] Descargando recurso jk.php...${NC}"
+            jkplayer_url="${domain}/jkplayer/${jkplayer_path}"
+            jkplayer_html="$tmp_dir/jkplayer.html"
 
-        wget \
-            --user-agent="$ua" \
-            -O "$jkphp_html" \
-            "$jkphp_url" \
-            > /dev/null \
-            2>"$tmp_dir/wget_jkphp.log"
+            echo -e "${CYAN}[Scraper] Descargando recurso jkplayer...${NC}"
 
-        if [[ -s "$jkphp_html" ]]; then
+            wget \
+                --user-agent="$ua" \
+                -O "$jkplayer_html" \
+                "$jkplayer_url" \
+                >/dev/null \
+                2>"$tmp_dir/wget_jkplayer.log"
 
-            src_contenido=$(grep -A 3 "video: {" "$jkphp_html" | sed -n \
-                -e "s/.*url: '\(http[^']*\)'.*/\1/p" \
-                -e "s/.*url: atob('\([^']*\)').*/\1/p" \
-                -e "s/.*url: '\([^']*\)',.*/\1/p" \
-                | head -n 1)
+            if [[ -s "$jkplayer_html" ]]; then
 
-            if [[ -n "$src_contenido" && "$src_contenido" != http* ]]; then
-                local decoded_url
-                decoded_url=$(base64 -d <<< "$src_contenido" 2>/dev/null)
+                # Soporta:
+                #   url: 'https://...'
+                #   url: atob('...')
+                src_contenido=$(grep -A 3 "video: {" "$jkplayer_html" | sed -n \
+                    -e "s/.*url: '\(http[^']*\)'.*/\1/p" \
+                    -e "s/.*url: atob('\([^']*\)').*/\1/p" \
+                    -e "s/.*url: '\([^']*\)',.*/\1/p" \
+                    | head -n 1)
 
-                if [[ "$decoded_url" == http* ]]; then
-                    src_contenido="$decoded_url"
+                # Si lo extraído parece Base64, decodificarlo.
+                if [[ -n "$src_contenido" && "$src_contenido" != http* ]]; then
+                    local decoded_url
+                    decoded_url=$(base64 -d <<<"$src_contenido" 2>/dev/null)
+
+                    if [[ "$decoded_url" == http* ]]; then
+                        src_contenido="$decoded_url"
+                    fi
                 fi
-            fi
 
-            if [[ -n "$src_contenido" ]]; then
-                echo -e "${GREEN}[Scraper] URL encontrada mediante jk.php.${NC}"
-                rm -rf "$tmp_dir"
-                return 0
-            fi
+                if [[ -n "$src_contenido" ]]; then
+                    echo -e "${GREEN}[Scraper] URL encontrada mediante jkplayer.${NC}"
+                    rm -rf "$tmp_dir"
+                    return 0
+                fi
 
-            echo -e "${YELLOW}[Scraper] jk.php fue encontrado, pero no se pudo extraer la URL.${NC}"
+                echo -e "${YELLOW}[Scraper] jkplayer fue encontrado, pero no se pudo extraer la URL.${NC}"
+
+            else
+                echo -e "${YELLOW}[Scraper] No se pudo descargar el recurso jkplayer.${NC}"
+            fi
 
         else
-            echo -e "${YELLOW}[Scraper] No se pudo descargar el recurso jk.php.${NC}"
+            echo -e "${YELLOW}[Scraper] No se encontró referencia a jkplayer.${NC}"
         fi
 
-    else
-        echo -e "${YELLOW}[Scraper] No se encontró referencia a jk.php.${NC}"
-    fi
+        # =========================================================================
+        # 3. JK.PHP — método legacy
+        # =========================================================================
 
-    # =========================================================================
-    # 4. MEDIAFIRE — método legacy
-    # =========================================================================
+        echo -e "${CYAN}[Scraper] Probando reproductor jk.php legacy...${NC}"
 
-    echo -e "${CYAN}[Scraper] Buscando servidor Mediafire...${NC}"
+        # Extrae el parámetro/query después de /jk.php
+        jkphp_path=$(grep -oP '<iframe[^>]+src="/jk\.php\K[^"]*' "$main_html" | head -n 1)
 
-    servers_file="$tmp_dir/servers.txt"
+        if [[ -n "$jkphp_path" ]]; then
 
-    # Extraemos "var servers = [...];" directamente desde el HTML.
-    # Se usa Python para soportar el caso donde el array ocupa varias líneas.
-    python3 - "$main_html" > "$servers_file" <<'PY'
+            echo -e "${GREEN}[Scraper] Referencia jk.php encontrada.${NC}"
+
+            jkphp_url="${domain}/jk.php${jkphp_path}"
+            jkphp_html="$tmp_dir/jk.php.html"
+
+            echo -e "${CYAN}[Scraper] Descargando recurso jk.php...${NC}"
+
+            wget \
+                --user-agent="$ua" \
+                -O "$jkphp_html" \
+                "$jkphp_url" \
+                >/dev/null \
+                2>"$tmp_dir/wget_jkphp.log"
+
+            if [[ -s "$jkphp_html" ]]; then
+
+                src_contenido=$(grep -A 3 "video: {" "$jkphp_html" | sed -n \
+                    -e "s/.*url: '\(http[^']*\)'.*/\1/p" \
+                    -e "s/.*url: atob('\([^']*\)').*/\1/p" \
+                    -e "s/.*url: '\([^']*\)',.*/\1/p" \
+                    | head -n 1)
+
+                if [[ -n "$src_contenido" && "$src_contenido" != http* ]]; then
+                    local decoded_url
+                    decoded_url=$(base64 -d <<<"$src_contenido" 2>/dev/null)
+
+                    if [[ "$decoded_url" == http* ]]; then
+                        src_contenido="$decoded_url"
+                    fi
+                fi
+
+                if [[ -n "$src_contenido" ]]; then
+                    echo -e "${GREEN}[Scraper] URL encontrada mediante jk.php.${NC}"
+                    rm -rf "$tmp_dir"
+                    return 0
+                fi
+
+                echo -e "${YELLOW}[Scraper] jk.php fue encontrado, pero no se pudo extraer la URL.${NC}"
+
+            else
+                echo -e "${YELLOW}[Scraper] No se pudo descargar el recurso jk.php.${NC}"
+            fi
+
+        else
+            echo -e "${YELLOW}[Scraper] No se encontró referencia a jk.php.${NC}"
+        fi
+
+        # =========================================================================
+        # 4. MEDIAFIRE — método legacy
+        # =========================================================================
+
+        echo -e "${CYAN}[Scraper] Buscando servidor Mediafire...${NC}"
+
+        servers_file="$tmp_dir/servers.txt"
+
+        # Extraemos "var servers = [...];" directamente desde el HTML.
+        # Se usa Python para soportar el caso donde el array ocupa varias líneas.
+        python3 - "$main_html" >"$servers_file" <<'PY'
 import re
 import sys
 
@@ -972,13 +996,14 @@ if match:
     print(match.group(1))
 PY
 
-    if [[ ! -s "$servers_file" ]]; then
-        echo -e "${YELLOW}[Scraper] No se encontró la variable servers.${NC}"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
+        if [[ ! -s "$servers_file" ]]; then
+            echo -e "${YELLOW}[Scraper] No se encontró la variable servers.${NC}"
+            rm -rf "$tmp_dir"
+            return 1
+        fi
 
-    mediafire_url=$(python3 - "$servers_file" <<'PY'
+        mediafire_url=$(
+            python3 - "$servers_file" <<'PY'
 import json
 import base64
 import sys
@@ -1000,290 +1025,291 @@ for server in servers:
 
         break
 PY
-)
+        )
 
-    if [[ -z "$mediafire_url" ]]; then
-        echo -e "${YELLOW}[Scraper] No se encontró servidor Mediafire válido.${NC}"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    echo -e "${GREEN}[Scraper] URL de Mediafire encontrada.${NC}"
-
-    mediafire_html="$tmp_dir/mediafire.html"
-
-    echo -e "${CYAN}[Scraper] Descargando página de Mediafire...${NC}"
-
-    wget \
-        --user-agent="$ua" \
-        --max-redirect=20 \
-        -O "$mediafire_html" \
-        "$mediafire_url" \
-        > /dev/null \
-        2>"$tmp_dir/wget_mediafire.log"
-
-    if [[ ! -s "$mediafire_html" ]]; then
-        echo -e "${RED}[Scraper] No se pudo descargar la página de Mediafire.${NC}"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    # Mediafire normalmente contiene el enlace real de descarga
-    # en un href que comienza por https://download...
-    src_contenido=$(grep -oP 'href="\Khttps://download[^"]+' "$mediafire_html" | head -n 1)
-
-    if [[ -z "$src_contenido" ]]; then
-        # Fallback para HTML donde el href no utiliza exactamente esa forma.
-        src_contenido=$(grep -oP 'https://download[^"'\'' ]+' "$mediafire_html" | head -n 1)
-    fi
-
-    if [[ -n "$src_contenido" ]]; then
-        echo -e "${GREEN}[Scraper] URL encontrada mediante Mediafire.${NC}"
-        rm -rf "$tmp_dir"
-        return 0
-    fi
-
-    echo -e "${RED}[Scraper] Mediafire fue encontrado, pero no se pudo extraer la URL de descarga.${NC}"
-
-    src_contenido=""
-
-    rm -rf "$tmp_dir"
-    return 1
-}
-
-# ----------------------------------------------------------------------------
-# videocap: scraping + reproduccion con mpv + menu Siguiente/Retroceder/Atras.
-# Mantiene el comportamiento original. Solo se ha extraido el scraping a
-# scrape_episode() para poder reutilizarlo en las descargas.
-# ----------------------------------------------------------------------------
-videocap(){
-capa=$1
-
-scrape_episode "$capa"
-
-if [ "$tipo" == "Pelicula" ]; then
-  capi=1
-fi
-
-clear
-
-echo "Capitulo: $capi"
-
-rm -r jkanime.net mediafire.com > /dev/null 2>&1
-
-ENV=$(detect_env)
-pos=0
-
-case "$ENV" in
-    wsl)
-        if command -v mpv.exe >/dev/null 2>&1; then
-            pos=$(mpv.exe --start=$progress --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1  | sed 's/AV: //g' 2>&1)
-        else
-            echo "mpv.exe no encontrado en Windows PATH"
-        fi
-        ;;
-    termux)
-        if pm list packages | grep -q 'org.videolan.vlc'; then
-            am start -a android.intent.action.VIEW -d "$src_contenido" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity
-            pos=0
-        else
-            termux-open-url "$src_contenido"
-            pos=0
-        fi
-        ;;
-    linux)
-        if command -v mpv >/dev/null 2>&1; then
-            pos=$(mpv --start=$progress -v --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1  | sed 's/AV: //g' 2>&1)
-        fi
-        ;;
-esac
-
-save_history "$titulo_elegido" "$capi" "$pos"
-
-op=$( (echo "Siguiente"; echo "Retroceder"; echo "Atras") | tac | fzf --prompt="Selecciona una opción: " --height=7 --border --info=inline --margin=1,1,0,0)
-
-if [[ "$op" == "Siguiente" ]]; then
-    progress="00:00:00"
-  capi=$((capi + 1))
-    save_history "$titulo_elegido" "$capi" "$pos"
-  videocap "$nuevaurl/$capi"
-elif [[ "$op" == "Retroceder" ]]; then
-  progress="00:00:00"
-  capi=$((capi - 1))
-  videocap "$nuevaurl/$capi"
-elif [[ "$opcion" == "Atras" ]]; then
-
-  main
-fi
-}
-
-# ----------------------------------------------------------------------------
-# download_season: descarga todos los episodios de una temporada.
-# IMPORTANTE: las URLs .m3u8 son temporales, por eso se obtiene una URL FRESCA
-# para cada episodio justo antes de descargarlo (scrape_episode por episodio).
-# $1 = nombre del anime
-# $2 = episodio inicial
-# $3 = episodio final (num_episodios)
-# $4 = URL base del anime (nuevaurl)
-# ----------------------------------------------------------------------------
-download_season(){
-local anime="$1"
-local start_ep="$2"
-local end_ep="$3"
-local base_url="$4"
-local ep downloaded=0 existing=0 failed=0 failed_eps="" rc
-
-for ep in $(seq "$start_ep" "$end_ep"); do
-    echo ""
-    echo -e "${CYAN}=== Episodio $ep ===${NC}"
-
-    # Comprobacion temprana: si ya existe y es valido y completo, ni siquiera scrapeamos.
-    local out_path part_files
-    out_path=$(get_episode_output_path "$anime" 1 "$ep")
-    part_files=$(ls "${out_path%.mp4}".mp4.part* 2>/dev/null)
-    if [[ -f "$out_path" ]] && ffprobe -v error "$out_path" >/dev/null 2>&1 && [[ -z "$part_files" ]]; then
-        echo -e "${YELLOW}Episodio $ep ya existe. Omitiendo...${NC}"
-        existing=$((existing + 1))
-        continue
-    fi
-
-    # URL fresca por episodio
-    echo "Obteniendo URL del episodio $ep..."
-    capi="$ep"
-    scrape_episode "$base_url/$ep"
-
-    # Limpieza de los temporales del wget
-    rm -r jkanime.net mediafire.com > /dev/null 2>&1
-
-    if [[ -z "$src_contenido" ]]; then
-        echo -e "${RED}No se pudo obtener la URL del episodio $ep.${NC}"
-        failed=$((failed + 1))
-        failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
-        continue
-    fi
-
-    download_episode "$anime" "$ep" "$src_contenido"
-    rc=$?
-    if [[ $rc -ne 0 ]]; then
-        failed=$((failed + 1))
-        failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
-    else
-        # Distinguir si era ya existente (download_episode devuelve 0 tambien al omitir)
-        if [[ -f "$out_path" ]] && ffprobe -v error "$out_path" >/dev/null 2>&1; then
-            # Si tras la llamada sigue siendo el mismo archivo preexistente lo
-            # contamos como existing; download_episode ya lo habra anunciado.
-            :
-        fi
-        downloaded=$((downloaded + 1))
-    fi
-done
-
-echo ""
-echo "===================================="
-echo "      DESCARGA COMPLETADA"
-echo "===================================="
-echo ""
-echo "Anime: $anime"
-echo "Temporada: 1"
-echo ""
-echo "Descargados: $downloaded"
-echo "Ya existentes: $existing"
-echo "Fallidos: $failed"
-echo "Total: $((downloaded + existing + failed))"
-
-if [[ $failed -gt 0 ]]; then
-    echo ""
-    echo "Episodios con error:"
-    printf "%b" "$failed_eps"
-fi
-}
-
-# ----------------------------------------------------------------------------
-# Menu de accion tras seleccionar episodio.
-# En modo descarga (-d) se oculta "Reproducir".
-# ----------------------------------------------------------------------------
-if [[ "$DOWNLOAD_MODE" == 1 ]]; then
-    opciones_accion=("Descargar episodio" "Descargar temporada" "Atrás")
-else
-    opciones_accion=("Reproducir" "Descargar episodio" "Descargar temporada" "Atrás")
-fi
-
-accion=$(printf "%s\n" "${opciones_accion[@]}" | tac | fzf --prompt="Acción: " --height=~12 --border --info=inline --margin=1,1,0,0)
-clear
-
-case "$accion" in
-    "Reproducir")
-        videocap "$capurl"
-        ;;
-
-    "Descargar episodio")
-        if ! check_download_deps; then
-            read -rp "Pulsa Enter para volver al menú..."
-            main
+        if [[ -z "$mediafire_url" ]]; then
+            echo -e "${YELLOW}[Scraper] No se encontró servidor Mediafire válido.${NC}"
+            rm -rf "$tmp_dir"
+            return 1
         fi
 
-        # Numero de episodio real para el nombre de archivo
-        if [ "$tipo" == "Pelicula" ]; then
-            ep_num=1
-        else
-            ep_num="$capi"
+        echo -e "${GREEN}[Scraper] URL de Mediafire encontrada.${NC}"
+
+        mediafire_html="$tmp_dir/mediafire.html"
+
+        echo -e "${CYAN}[Scraper] Descargando página de Mediafire...${NC}"
+
+        wget \
+            --user-agent="$ua" \
+            --max-redirect=20 \
+            -O "$mediafire_html" \
+            "$mediafire_url" \
+            >/dev/null \
+            2>"$tmp_dir/wget_mediafire.log"
+
+        if [[ ! -s "$mediafire_html" ]]; then
+            echo -e "${RED}[Scraper] No se pudo descargar la página de Mediafire.${NC}"
+            rm -rf "$tmp_dir"
+            return 1
         fi
 
-        echo "Obteniendo URL del episodio..."
-        scrape_episode "$capurl"
-        rm -r jkanime.net mediafire.com > /dev/null 2>&1
+        # Mediafire normalmente contiene el enlace real de descarga
+        # en un href que comienza por https://download...
+        src_contenido=$(grep -oP 'href="\Khttps://download[^"]+' "$mediafire_html" | head -n 1)
 
         if [[ -z "$src_contenido" ]]; then
-            echo -e "${RED}No se pudo obtener la URL del video.${NC}"
-            read -rp "Pulsa Enter para continuar..."
-            main
+            # Fallback para HTML donde el href no utiliza exactamente esa forma.
+            src_contenido=$(grep -oP 'https://download[^"'\'' ]+' "$mediafire_html" | head -n 1)
         fi
 
-        echo -e "${CYAN}URL obtenida:${NC} $src_contenido"
-        echo ""
-        download_episode "$titulo_elegido" "$ep_num" "$src_contenido"
-        echo ""
-        read -rp "Pulsa Enter para continuar..."
-        main
-        ;;
-
-    "Descargar temporada")
-        if ! check_download_deps; then
-            read -rp "Pulsa Enter para volver al menú..."
-            main
+        if [[ -n "$src_contenido" ]]; then
+            echo -e "${GREEN}[Scraper] URL encontrada mediante Mediafire.${NC}"
+            rm -rf "$tmp_dir"
+            return 0
         fi
 
-        # Para peliculas no tiene sentido "temporada": se descarga el unico ep.
+        echo -e "${RED}[Scraper] Mediafire fue encontrado, pero no se pudo extraer la URL de descarga.${NC}"
+
+        src_contenido=""
+
+        rm -rf "$tmp_dir"
+        return 1
+    }
+
+    # ----------------------------------------------------------------------------
+    # videocap: scraping + reproduccion con mpv + menu Siguiente/Retroceder/Atras.
+    # Mantiene el comportamiento original. Solo se ha extraido el scraping a
+    # scrape_episode() para poder reutilizarlo en las descargas.
+    # ----------------------------------------------------------------------------
+    videocap() {
+        capa=$1
+
+        scrape_episode "$capa"
+
         if [ "$tipo" == "Pelicula" ]; then
+            capi=1
+        fi
+
+        clear
+
+        echo "Capitulo: $capi"
+
+        rm -r jkanime.net mediafire.com >/dev/null 2>&1
+
+        ENV=$(detect_env)
+        pos=0
+
+        case "$ENV" in
+            wsl)
+                if command -v mpv.exe >/dev/null 2>&1; then
+                    pos=$(mpv.exe --start=$progress --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1 | sed 's/AV: //g' 2>&1)
+                else
+                    echo "mpv.exe no encontrado en Windows PATH"
+                fi
+                ;;
+            termux)
+                if pm list packages | grep -q 'org.videolan.vlc'; then
+                    am start -a android.intent.action.VIEW -d "$src_contenido" -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity
+                    pos=0
+                else
+                    termux-open-url "$src_contenido"
+                    pos=0
+                fi
+                ;;
+            linux)
+                if command -v mpv >/dev/null 2>&1; then
+                    pos=$(mpv --start=$progress -v --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1 | sed 's/AV: //g' 2>&1)
+                fi
+                ;;
+        esac
+
+        save_history "$titulo_elegido" "$capi" "$pos"
+
+        op=$( (
+            echo "Siguiente"
+            echo "Retroceder"
+            echo "Atras"
+        ) | tac | fzf --prompt="Selecciona una opción: " --height=7 --border --info=inline --margin=1,1,0,0)
+
+        if [[ "$op" == "Siguiente" ]]; then
+            progress="00:00:00"
+            capi=$((capi + 1))
+            save_history "$titulo_elegido" "$capi" "$pos"
+            videocap "$nuevaurl/$capi"
+        elif [[ "$op" == "Retroceder" ]]; then
+            progress="00:00:00"
+            capi=$((capi - 1))
+            videocap "$nuevaurl/$capi"
+        elif [[ "$opcion" == "Atras" ]]; then
+
+            main
+        fi
+    }
+
+    # ----------------------------------------------------------------------------
+    # download_season: descarga todos los episodios de una temporada.
+    # IMPORTANTE: las URLs .m3u8 son temporales, por eso se obtiene una URL FRESCA
+    # para cada episodio justo antes de descargarlo (scrape_episode por episodio).
+    # $1 = nombre del anime
+    # $2 = episodio inicial
+    # $3 = episodio final (num_episodios)
+    # $4 = URL base del anime (nuevaurl)
+    # ----------------------------------------------------------------------------
+    download_season() {
+        local anime="$1"
+        local start_ep="$2"
+        local end_ep="$3"
+        local base_url="$4"
+        local ep downloaded=0 existing=0 failed=0 failed_eps="" rc
+
+        for ep in $(seq "$start_ep" "$end_ep"); do
+            echo ""
+            echo -e "${CYAN}=== Episodio $ep ===${NC}"
+
+            # Comprobacion temprana: si ya existe y es valido y completo, ni siquiera scrapeamos.
+            local out_path part_files
+            out_path=$(get_episode_output_path "$anime" 1 "$ep")
+            part_files=$(ls "${out_path%.mp4}".mp4.part* 2>/dev/null)
+            if [[ -f "$out_path" ]] && ffprobe -v error "$out_path" >/dev/null 2>&1 && [[ -z "$part_files" ]]; then
+                echo -e "${YELLOW}Episodio $ep ya existe. Omitiendo...${NC}"
+                existing=$((existing + 1))
+                continue
+            fi
+
+            # URL fresca por episodio
+            echo "Obteniendo URL del episodio $ep..."
+            capi="$ep"
+            scrape_episode "$base_url/$ep"
+
+            # Limpieza de los temporales del wget
+            rm -r jkanime.net mediafire.com >/dev/null 2>&1
+
+            if [[ -z "$src_contenido" ]]; then
+                echo -e "${RED}No se pudo obtener la URL del episodio $ep.${NC}"
+                failed=$((failed + 1))
+                failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
+                continue
+            fi
+
+            download_episode "$anime" "$ep" "$src_contenido"
+            rc=$?
+            if [[ $rc -ne 0 ]]; then
+                failed=$((failed + 1))
+                failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
+            else
+                # Distinguir si era ya existente (download_episode devuelve 0 tambien al omitir)
+                if [[ -f "$out_path" ]] && ffprobe -v error "$out_path" >/dev/null 2>&1; then
+                    # Si tras la llamada sigue siendo el mismo archivo preexistente lo
+                    # contamos como existing; download_episode ya lo habra anunciado.
+                    :
+                fi
+                downloaded=$((downloaded + 1))
+            fi
+        done
+
+        echo ""
+        echo "===================================="
+        echo "      DESCARGA COMPLETADA"
+        echo "===================================="
+        echo ""
+        echo "Anime: $anime"
+        echo "Temporada: 1"
+        echo ""
+        echo "Descargados: $downloaded"
+        echo "Ya existentes: $existing"
+        echo "Fallidos: $failed"
+        echo "Total: $((downloaded + existing + failed))"
+
+        if [[ $failed -gt 0 ]]; then
+            echo ""
+            echo "Episodios con error:"
+            printf "%b" "$failed_eps"
+        fi
+    }
+
+    # ----------------------------------------------------------------------------
+    # Menu de accion tras seleccionar episodio.
+    # En modo descarga (-d) se oculta "Reproducir".
+    # ----------------------------------------------------------------------------
+    if [[ "$DOWNLOAD_MODE" == 1 ]]; then
+        opciones_accion=("Descargar episodio" "Descargar temporada" "Atrás")
+    else
+        opciones_accion=("Reproducir" "Descargar episodio" "Descargar temporada" "Atrás")
+    fi
+
+    accion=$(printf "%s\n" "${opciones_accion[@]}" | tac | fzf --prompt="Acción: " --height=~12 --border --info=inline --margin=1,1,0,0)
+    clear
+
+    case "$accion" in
+        "Reproducir")
+            videocap "$capurl"
+            ;;
+
+        "Descargar episodio")
+            if ! check_download_deps; then
+                read -rp "Pulsa Enter para volver al menú..."
+                main
+            fi
+
+            # Numero de episodio real para el nombre de archivo
+            if [ "$tipo" == "Pelicula" ]; then
+                ep_num=1
+            else
+                ep_num="$capi"
+            fi
+
             echo "Obteniendo URL del episodio..."
             scrape_episode "$capurl"
-            rm -r jkanime.net mediafire.com > /dev/null 2>&1
-            if [[ -n "$src_contenido" ]]; then
-                download_episode "$titulo_elegido" 1 "$src_contenido"
-            else
+            rm -r jkanime.net mediafire.com >/dev/null 2>&1
+
+            if [[ -z "$src_contenido" ]]; then
                 echo -e "${RED}No se pudo obtener la URL del video.${NC}"
+                read -rp "Pulsa Enter para continuar..."
+                main
             fi
+
+            echo -e "${CYAN}URL obtenida:${NC} $src_contenido"
+            echo ""
+            download_episode "$titulo_elegido" "$ep_num" "$src_contenido"
+            echo ""
             read -rp "Pulsa Enter para continuar..."
             main
-        fi
+            ;;
 
-        download_season "$titulo_elegido" 1 "$num_episodios" "$nuevaurl"
-        echo ""
-        read -rp "Pulsa Enter para continuar..."
-        main
-        ;;
+        "Descargar temporada")
+            if ! check_download_deps; then
+                read -rp "Pulsa Enter para volver al menú..."
+                main
+            fi
 
-    "Atrás"|"Atras")
-        main
-        ;;
+            # Para peliculas no tiene sentido "temporada": se descarga el unico ep.
+            if [ "$tipo" == "Pelicula" ]; then
+                echo "Obteniendo URL del episodio..."
+                scrape_episode "$capurl"
+                rm -r jkanime.net mediafire.com >/dev/null 2>&1
+                if [[ -n "$src_contenido" ]]; then
+                    download_episode "$titulo_elegido" 1 "$src_contenido"
+                else
+                    echo -e "${RED}No se pudo obtener la URL del video.${NC}"
+                fi
+                read -rp "Pulsa Enter para continuar..."
+                main
+            fi
 
-    *)
-        main
-        ;;
-esac
+            download_season "$titulo_elegido" 1 "$num_episodios" "$nuevaurl"
+            echo ""
+            read -rp "Pulsa Enter para continuar..."
+            main
+            ;;
+
+        "Atrás" | "Atras")
+            main
+            ;;
+
+        *)
+            main
+            ;;
+    esac
 }
 
-
-
 main
-
