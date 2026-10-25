@@ -1,13 +1,26 @@
 #!/bin/bash
 
-VERSION="1.4.2"
+VERSION="1.5.0"
 
 CONTINUE=0
 DOWNLOAD_MODE=0
 progress="00:00:00"
 
-# Ruta de descarga para biblioteca Jellyfin (sobrescribible por entorno)
-ANIME_DOWNLOAD_DIR="${ANIME_DOWNLOAD_DIR:-N:/Multimedy/Anime}"
+# Ruta de descarga para la biblioteca de Jellyfin (sobrescribible con ANIME_DOWNLOAD_DIR).
+# Por defecto: <carpeta de Videos del usuario>/Anime
+if [[ -z "${ANIME_DOWNLOAD_DIR:-}" ]]; then
+    videos_dir=$(xdg-user-dir VIDEOS 2>/dev/null)
+    [[ -z "$videos_dir" || "$videos_dir" == "$HOME" ]] && videos_dir="$HOME/Videos"
+    ANIME_DOWNLOAD_DIR="$videos_dir/Anime"
+fi
+# Si la ruta es relativa, se resuelve ahora: el script trabaja luego en una carpeta temporal
+[[ "$ANIME_DOWNLOAD_DIR" == /* || "$ANIME_DOWNLOAD_DIR" =~ ^[A-Za-z]: ]] || ANIME_DOWNLOAD_DIR="$PWD/$ANIME_DOWNLOAD_DIR"
+
+# Navegador con el que se identifica el scraper (un solo sitio para actualizarlo)
+USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+
+# Ruta real del script (antes de cambiar de carpeta de trabajo)
+SCRIPT_PATH=$(readlink -f "$0")
 
 # cosas para texto
 RED='\033[0;31m'
@@ -18,14 +31,6 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[0;37m'
 
-# cosas para el fondo del texto
-BG_RED='\033[41m'
-BG_GREEN='\033[42m'
-BG_YELLOW='\033[43m'
-BG_BLUE='\033[44m'
-BG_PURPLE='\033[45m'
-BG_CYAN='\033[46m'
-BG_WHITE='\033[47m'
 
 NC='\033[0m'
 
@@ -169,6 +174,13 @@ show_help() {
     echo ""
 }
 
+# Mensaje unico para cuando el scraper no encuentra lo que espera en la web
+aviso_sitio_cambiado() {
+    echo -e "${YELLOW}Si esto se repite con animes que sabes que existen, es probable que jkanime.net"
+    echo -e "haya cambiado su web y the-wired necesite una actualizacion:${NC}"
+    echo -e "  ${CYAN}the-wired -u${NC}   o revisa https://github.com/KabraX/the-wired/issues"
+}
+
 show_version() {
     echo -e "the-wired ${PURPLE}v${VERSION}${NC}"
 }
@@ -302,7 +314,7 @@ download_episode() {
     local anime="$1"
     local episode="$2"
     local url="$3"
-    local out_path out_dir out_template rc
+    local out_path out_dir rc
 
     out_path=$(get_episode_output_path "$anime" 1 "$episode")
     out_dir=$(dirname "$out_path")
@@ -355,7 +367,7 @@ UPDATE_INTERVAL=86400
 check_update() {
     local script_path script_dir remote_file remote_version now last=0
 
-    script_path=$(readlink -f "$0")
+    script_path="$SCRIPT_PATH"
     script_dir=$(dirname "$script_path")
 
     if [[ "${THE_WIRED_NO_UPDATE:-0}" == "1" ]]; then
@@ -430,8 +442,6 @@ check_update() {
 
 main() {
 
-    check_update
-
     clear
 
     check_dependencies wget fzf grep sed python3 mpv jq curl
@@ -501,13 +511,12 @@ END
 
         rm -r jkanime.net
 
-        wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $new_urls wget >/dev/null 2>&1
+        wget --user-agent="$USER_AGENT" -p "$new_urls" >/dev/null 2>&1
 
         rm -r resultados.txt
 
-        grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' $new_dict >resultados.txt
+        grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' "$new_dict" >resultados.txt
 
-        num_resultados=$(wc -l <resultados.txt)
 
         echo -e "Pagina: $new_number ${NC}"
 
@@ -521,9 +530,9 @@ END
         ) | tac | fzf --prompt="Selecciona una opción: " --height=19 --border --info=inline --margin=1,1,0,0)
 
         if [[ "$opcion" == "Siguiente" ]]; then
-            pagina_siguiente $new_urls
+            pagina_siguiente "$new_urls"
         elif [[ "$opcion" == "Anterior" ]]; then
-            pagina_anterior $new_urls
+            pagina_anterior "$new_urls"
         elif [[ "$opcion" == "Salir" ]]; then
             clear
             main
@@ -596,13 +605,12 @@ END
 
         rm -r jkanime.net
 
-        wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $new_urls wget >/dev/null 2>&1
+        wget --user-agent="$USER_AGENT" -p "$new_urls" >/dev/null 2>&1
 
         rm -r resultados.txt
 
-        grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' $new_dict >resultados.txt
+        grep -oP '(?<=<div class="title">)[^<]+(?=</div>)' "$new_dict" >resultados.txt
 
-        num_resultados=$(wc -l <resultados.txt)
 
         echo -e "Pagina: $new_number ${NC}"
         echo -e "Resultados para: $query"
@@ -614,9 +622,9 @@ END
         ) | tac | fzf --prompt="Selecciona una opción: " --height=19 --border --info=inline --margin=1,1,0,0)
 
         if [[ "$opcion" == "Siguiente" ]]; then
-            pagina_siguiente $new_urls
+            pagina_siguiente "$new_urls"
         elif [[ "$opcion" == "Anterior" ]]; then
-            pagina_anterior $new_urls
+            pagina_anterior "$new_urls"
         elif [[ "$opcion" == "Salir" ]]; then
             clear
             main
@@ -625,28 +633,34 @@ END
     }
 
     if [[ -z "$arg1" ]]; then
-        read -p "Buscar Anime: " oracion
+        read -r -p "Buscar Anime: " oracion
         clear
     else
         oracion="$arg1"
     fi
 
-    query=$(echo $oracion | tr ' ' '_')
+    query=$(echo "$oracion" | tr ' ' '_')
 
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p https://jkanime.net/buscar/$query/ >/dev/null 2>&1
+    wget --user-agent="$USER_AGENT" --tries=3 --retry-on-http-error=502,503,504 -p "https://jkanime.net/buscar/$query/" >/dev/null 2>&1
 
     input_file="jkanime.net/buscar/$query/index.html"
 
-    if [[ ! -f $input_file ]]; then
-        echo "Archivo $input_file no encontrado."
+    if [[ ! -f "$input_file" ]]; then
+        echo -e "${RED}No se pudo descargar la busqueda de jkanime.net.${NC}"
+        echo "Comprueba tu conexion o si el sitio esta caido."
+        aviso_sitio_cambiado
         exit 1
     fi
 
-    grep -oP '<h5><a\s+href="[^"]*">\K.*?(?=</a></h5>)' $input_file | sed 's/&quot;//g' >resultados.txt
+    grep -oP '<h5><a\s+href="[^"]*">\K.*?(?=</a></h5>)' "$input_file" | sed 's/&quot;//g' >resultados.txt
 
-    num_resultados=$(wc -l <resultados.txt)
 
     num_animes=$(wc -l <resultados.txt)
+    if [[ "$num_animes" == "0" ]]; then
+        echo -e "${YELLOW}No hay resultados para \"$oracion\".${NC}"
+        aviso_sitio_cambiado
+        exit 1
+    fi
     if [[ "$num_animes" == "1" ]]; then
         opcion=$(cat resultados.txt)
         echo Cargando...
@@ -674,7 +688,7 @@ END
     titulo_elegido=$opcion
 
     quer=$(echo "$titulo_elegido" | tr -cd '[:alnum:] -')
-    quer=$(echo $quer | tr ' ' '-')
+    quer=$(echo "$quer" | tr ' ' '-')
     qee=$(echo "$quer" | tr '[:upper:]' '[:lower:]')
     nuevaurl="https://jkanime.net/$qee"
 
@@ -699,9 +713,19 @@ END
     nuevaurl="${nuevaurl%%/}"
     rm -r jkanime.net >/dev/null 2>&1
 
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -p $nuevaurl >/dev/null 2>&1
+    wget --user-agent="$USER_AGENT" --tries=3 --retry-on-http-error=502,503,504 -p "$nuevaurl" >/dev/null 2>&1
 
     url_without_https="${nuevaurl/https:\/\//}"
+
+    # Si la ficha del anime no se descargo (sitio caido o error 5xx), avisar y volver al menu
+    if [[ ! -e "$url_without_https" ]]; then
+        echo -e "${RED}No se pudo descargar la pagina del anime en jkanime.net.${NC}"
+        echo "Comprueba tu conexion o si el sitio esta caido."
+        aviso_sitio_cambiado
+        read -rp "Pulsa Enter para volver al menu..."
+        arg1=""  # vuelve a preguntar que buscar en vez de repetir la misma busqueda
+        main
+    fi
 
     if [ -d "$url_without_https" ]; then
         token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
@@ -741,14 +765,13 @@ END
     last_cap=$(get_last_cap "$titulo_elegido")
 
     if [ -d "$url_without_https" ]; then
-        tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https/index.html | tail -n 1)
+        tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' "$url_without_https/index.html" | tail -n 1)
     else
-        tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https | tail -n 1)
+        tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' "$url_without_https" | tail -n 1)
     fi
 
     echo -e "Ultimo episodio visto: $last_cap"
 
-    CONTENIDO=$(curl -s -L "$nuevaurl")
 
     if [ -z "$num_episodios" ]; then
         num_episodios=0
@@ -811,7 +834,7 @@ END
 
         src_contenido=""
 
-        ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ua="$USER_AGENT"
 
         echo -e "${CYAN}[Scraper] Episodio: $capa${NC}"
         echo -e "${CYAN}[Scraper] Descargando página...${NC}"
@@ -1102,7 +1125,7 @@ PY
         case "$ENV" in
             wsl)
                 if command -v mpv.exe >/dev/null 2>&1; then
-                    pos=$(mpv.exe --start=$progress --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1 | sed 's/AV: //g' 2>&1)
+                    pos=$(mpv.exe --start="$progress" --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1 | sed 's/AV: //g' 2>&1)
                 else
                     echo "mpv.exe no encontrado en Windows PATH"
                 fi
@@ -1118,7 +1141,7 @@ PY
                 ;;
             linux)
                 if command -v mpv >/dev/null 2>&1; then
-                    pos=$(mpv --start=$progress -v --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1 | sed 's/AV: //g' 2>&1)
+                    pos=$(mpv --start="$progress" -v --msg-level=ffmpeg=no --force-media-title="$opcion-$capi" "$src_contenido" | grep -oE 'AV: [0-9]{2}:[0-9]{2}:[0-9]{2}' | tail -n 1 | sed 's/AV: //g' 2>&1)
                 fi
                 ;;
         esac
@@ -1186,6 +1209,7 @@ PY
 
             if [[ -z "$src_contenido" ]]; then
                 echo -e "${RED}No se pudo obtener la URL del episodio $ep.${NC}"
+                aviso_sitio_cambiado
                 failed=$((failed + 1))
                 failed_eps="${failed_eps}- $(printf "%02d" "$ep")\n"
                 continue
@@ -1264,6 +1288,7 @@ PY
 
             if [[ -z "$src_contenido" ]]; then
                 echo -e "${RED}No se pudo obtener la URL del video.${NC}"
+                aviso_sitio_cambiado
                 read -rp "Pulsa Enter para continuar..."
                 main
             fi
@@ -1291,6 +1316,7 @@ PY
                     download_episode "$titulo_elegido" 1 "$src_contenido"
                 else
                     echo -e "${RED}No se pudo obtener la URL del video.${NC}"
+                    aviso_sitio_cambiado
                 fi
                 read -rp "Pulsa Enter para continuar..."
                 main
@@ -1312,4 +1338,14 @@ PY
     esac
 }
 
+# Todo lo que el scraper descarga (paginas, cookies, listas) va a una carpeta
+# temporal que se borra al salir, en vez de ensuciar la carpeta actual.
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/the-wired.XXXXXX") || exit 1
+trap 'rm -rf "$WORKDIR"' EXIT
+# Ctrl+C o kill: salir por la via normal para que se ejecute la limpieza
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cd "$WORKDIR" || exit 1
+
+check_update
 main

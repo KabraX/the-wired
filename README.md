@@ -8,14 +8,14 @@ Reproductor **+ descargador** de anime en español desde la terminal. Manteniend
 
 ## ⚠️ Aviso importante
 
-**Este fork solo se ha testeado en el siguiente entorno:**
+**Entornos probados:**
 
-- **OS:** Windows 11
-- **Shell:** Git Bash / MINGW64 (NO WSL)
-- **Terminal:** Windows Terminal con perfil Git Bash
-- **Biblioteca Jellyfin:** `N:/Multimedy/Anime`
+- **Windows 11** con Git Bash / MINGW64 (no WSL) en Windows Terminal
+- **Linux:** CachyOS (Arch) con bash; la descarga va directa a una biblioteca de Jellyfin
 
-No se garantiza funcionamiento en Linux, macOS, WSL u otras configuraciones de Windows. El script *debería* seguir funcionando en Linux (la lógica de reproducción de ani-es no se modificó), pero las funciones de descarga se probaron exclusivamente en Git Bash sobre Windows 11.
+No se ha probado en macOS ni en WSL.
+
+the-wired depende de la web de jkanime.net: si el sitio cambia su HTML, la búsqueda o la obtención de vídeos pueden dejar de funcionar hasta que se actualice el scraper. En ese caso el script lo indica y sugiere `the-wired -u`.
 
 ---
 
@@ -69,17 +69,13 @@ Las descargas se guardan con el formato que Jellyfin espera:
       ...
 ```
 
-La ruta por defecto es `N:/Multimedy/Anime` pero se puede sobrescribir:
-
-```bash
-export ANIME_DOWNLOAD_DIR="D:/Otra/Biblioteca/Anime"
-```
+La ruta por defecto es `<carpeta de Vídeos>/Anime` (en Linux, `~/Videos/Anime` o la que indique `xdg-user-dir VIDEOS`). Se puede cambiar con `ANIME_DOWNLOAD_DIR` (ver «Configuración»).
 
 ### Modo descarga (`-d` / `--download`)
 
 ```bash
-ani-es -d
-ani-es --download
+the-wired -d
+the-wired --download
 ```
 
 Oculta la opción "Reproducir" del menú, dejando solo las opciones de descarga. Útil si usas the-wired principalmente como descargador.
@@ -103,9 +99,20 @@ Para minimizar el riesgo de romper algo que ya funcionaba:
 - **Selección de anime y episodios:** sin cambios.
 - **Reproducción con mpv:** sin cambios. El historial (`history.json`) sigue funcionando igual y las descargas no lo modifican.
 - **Comandos existentes:** `-h`, `-v`, `-c` siguen funcionando igual.
-- **Auto-actualización:** se mantiene del original.
+- **Auto-actualización:** reescrita en la 1.4.2 (ver «Actualizaciones» en Configuración).
 
 ---
+
+## 📦 Instalación en Linux
+
+```bash
+git clone https://github.com/KabraX/the-wired.git
+cd the-wired
+./install.sh          # instala dependencias y copia the-wired a ~/.local/bin
+# ./install.sh --link # o: enlace al clon, y actualizas con git pull
+```
+
+No copia nada como root: solo usa `sudo` para instalar las dependencias con el gestor de paquetes (pacman, apt, dnf o zypper). Para quitarlo: `./uninstall.sh` (añade `--purge` para borrar también el historial).
 
 ## 📦 Instalación (Windows 11 + Git Bash)
 
@@ -178,7 +185,7 @@ Para poder ejecutarlo desde cualquier sitio, crea un alias o añade el directori
 ln -s "$(pwd)/the-wired" /usr/local/bin/the-wired
 ```
 
-> Nota: el `install.sh` original de ani-es está pensado para Linux (usa `apt-get`, `dnf`, etc.) y **no funciona en Git Bash**. La instalación manual de arriba es la que se ha testeado en este entorno.
+> Nota: `install.sh` es para Linux y **no funciona en Git Bash**. En Windows usa la instalación manual de arriba.
 
 ---
 
@@ -224,6 +231,7 @@ the-wired -c
 ```bash
 the-wired --help
 the-wired --version
+the-wired -u        # buscar actualizaciones ahora
 ```
 
 ---
@@ -250,13 +258,26 @@ the-wired --version
 
 ### Ruta de descarga
 
-Por defecto las descargas van a `N:/Multimedy/Anime`. Sobrescríbela con:
+Por defecto las descargas van a `<carpeta de Vídeos>/Anime`. Para usar tu biblioteca de Jellyfin:
 
 ```bash
-export ANIME_DOWNLOAD_DIR="D:/Mi/Biblioteca/Anime"
+# bash / Git Bash (añádelo a ~/.bashrc para que persista)
+export ANIME_DOWNLOAD_DIR="/ruta/a/tu/biblioteca/Anime"   # Windows: "D:/Multimedy/Anime"
+
+# fish
+set -Ux ANIME_DOWNLOAD_DIR /ruta/a/tu/biblioteca/Anime
 ```
 
-Añádelo a tu `~/.bashrc` para que persista entre sesiones.
+### Actualizaciones
+
+- the-wired busca una versión nueva **como mucho una vez al día** y solo la ofrece si su número de versión es **mayor** que el instalado (nunca baja de versión).
+- Antes de instalarla comprueba que el archivo descargado es un script válido.
+- `the-wired -u` fuerza la comprobación; `THE_WIRED_NO_UPDATE=1` la desactiva.
+- Si lo instalaste como enlace a un clon de git, no se reescribe: actualiza con `git pull`.
+
+### Archivos temporales
+
+Las páginas que descarga el scraper se guardan en una carpeta temporal que se borra al salir, así que puedes ejecutar `the-wired` desde cualquier carpeta sin que se llene de archivos.
 
 ### Estructura de carpetas Jellyfin
 
@@ -268,7 +289,7 @@ Añádelo a tu `~/.bashrc` para que persista entre sesiones.
       <Anime> - S01E02.mp4
 ```
 
-Los nombres de archivo se sanitizan para Windows (se eliminan `< > : " / \ | ? *`). Los caracteres Unicode (acentos, etc.) se preservan.
+Los nombres de archivo se sanitizan con las reglas de Windows (también en Linux, para que la biblioteca funcione en ambos) (se eliminan `< > : " / \ | ? *`). Los caracteres Unicode (acentos, etc.) se preservan.
 
 ---
 

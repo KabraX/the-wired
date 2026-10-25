@@ -1,0 +1,17 @@
+# Restos del scraper si se ejecuta el script desde la carpeta del repo
+# (desde la versión 1.5 trabaja en una carpeta temporal, pero por si acaso)
+jkanime.net/
+mediafire.com/
+*.html
+cookies.txt
+resultados.txt
+debug_*.txt
+
+# Historial y datos locales
+history.json
+history.db
+.last_update_check
+
+# Descargas a medias de yt-dlp
+*.part
+*.ytdl
