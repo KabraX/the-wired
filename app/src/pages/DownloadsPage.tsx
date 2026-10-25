@@ -9,7 +9,7 @@ import {
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { DeleteRegular, DismissRegular, FolderOpenRegular } from "@fluentui/react-icons";
+import { DeleteRegular, DismissCircleRegular, DismissRegular, FolderOpenRegular } from "@fluentui/react-icons";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api, formatEta, formatSpeed, isFinished, type Job } from "../api";
 
@@ -52,6 +52,7 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
   const styles = useStyles();
   const count = (st: string) => jobs.filter((j) => j.status.state === st).length;
   const active = jobs.filter((j) => !isFinished(j)).length;
+  const queued = jobs.filter((j) => j.status.state === "queued");
 
   if (jobs.length === 0)
     return <Text>No hay descargas. Busca un anime y elige episodios o una temporada.</Text>;
@@ -63,6 +64,14 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
           {active > 0 ? `${active} en curso · ` : ""}
           Descargados: {count("done")} · Ya existentes: {count("skipped")} · Fallidos: {count("failed")}
         </Text>
+        <Button
+          icon={<DismissCircleRegular />}
+          appearance="subtle"
+          disabled={queued.length === 0}
+          onClick={() => Promise.all(queued.map((j) => api.cancelDownload(j.id)))}
+        >
+          Cancelar pendientes ({queued.length})
+        </Button>
         <Button
           icon={<DeleteRegular />}
           appearance="subtle"
@@ -87,9 +96,11 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
       <div className={styles.list}>
         {jobs.map((j) => {
           const s = j.status;
+          // Sin valor, la barra de Fluent se anima ("trabajando"): solo para lo que está en marcha
           const value =
             s.state === "downloading" ? (s.percent != null ? s.percent / 100 : undefined) :
-            s.state === "done" || s.state === "skipped" ? 1 : s.state === "queued" ? 0 : undefined;
+            s.state === "resolving" ? undefined :
+            s.state === "done" || s.state === "skipped" || s.state === "failed" ? 1 : 0;
           return (
             <Card key={j.id} className={styles.card}>
               <div>
