@@ -2,7 +2,7 @@
 # (desde la versión 1.5 trabaja en una carpeta temporal, pero por si acaso)
 jkanime.net/
 mediafire.com/
-*.html
+/*.html
 cookies.txt
 resultados.txt
 debug_*.txt

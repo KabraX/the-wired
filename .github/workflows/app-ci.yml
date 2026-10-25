@@ -1,0 +1,49 @@
+name: App CI
+
+# Comprueba que la app de escritorio compila en Windows y Linux cuando cambia app/.
+# No publica nada: eso lo hace release-app.yml al crear una etiqueta app-vX.Y.Z.
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/app-ci.yml"]
+  pull_request:
+    paths: ["app/**", ".github/workflows/app-ci.yml"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias de sistema (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - run: pnpm install --frozen-lockfile
+      - name: Tests del núcleo (Rust)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Compilar la app (sin instaladores)
+        run: pnpm tauri build --no-bundle
