@@ -30,7 +30,8 @@ base64 = "0.23.1"
 thiserror = "2.0.21"
 url = "2.5.8"
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "cookies", "json", "form"] }
-tokio = { version = "1.54.1", features = ["time"] }
+tokio = { version = "1.54.1", features = ["time", "process", "io-util", "sync", "macros", "rt"] }
+tauri-plugin-dialog = "2.8.3"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -42,4 +43,5 @@ panic = "abort"
 strip = true
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }

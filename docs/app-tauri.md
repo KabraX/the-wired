@@ -1,6 +1,6 @@
 # the-wired app — diseño de la versión de escritorio (Tauri)
 
-Estado: **aprobado** (2026-10-25). Fase 0 y fase 1 hechas en local; siguiente: fase 2.
+Estado: **aprobado** (2026-10-25). Fases 0, 1 y 2 hechas; siguiente: fase 3 (instaladores con yt-dlp incluido y updater).
 
 ## Objetivo
 
