@@ -1,6 +1,6 @@
 # the-wired app — diseño de la versión de escritorio (Tauri)
 
-Estado: **aprobado** (2026-10-25). En desarrollo, fase 0.
+Estado: **aprobado** (2026-10-25). Fase 0 y fase 1 hechas en local; siguiente: fase 2.
 
 ## Objetivo
 
@@ -51,7 +51,6 @@ the-wired/
             │   ├── search.rs      búsqueda y paginación
             │   ├── anime.rs       ficha: tipo, nº de episodios, API de episodios
             │   ├── episode.rs     cadena de fuentes de vídeo
-            │   └── exceptions.rs  excepciones.json
             ├── download.rs    cola de descargas con yt-dlp
             ├── history.rs     historial compartido con el script
             ├── library.rs     rutas y nombres estilo Jellyfin
@@ -63,8 +62,8 @@ the-wired/
 | En el script (bash) | En la app (Rust) | Notas |
 |---|---|---|
 | Búsqueda: `wget -p .../buscar/<query>/` + `grep '<h5><a ...>'` | `jkanime::search` | `reqwest` + parser HTML (`scraper`) en vez de regex sobre archivos. Paginación `.../buscar/<q>/<n>/` |
-| `excepciones.json` remoto (Zhuchii) | `jkanime::exceptions` | Misma URL, con caché local y tiempo de expiración |
-| Ficha: token CSRF + `ajax/episodes/<id>` → `total` | `jkanime::anime` | Cookie jar de `reqwest`; POST con `X-CSRF-TOKEN`. Tipo ("Película") desde `<span>Tipo:</span>` |
+| `excepciones.json` remoto (Zhuchii) | *No hace falta* | El script adivina la URL a partir del título y corrige los fallos con esa lista. La app usa el enlace real de cada resultado de búsqueda |
+| Ficha: token CSRF + `ajax/episodes/<id>` → `total` | `jkanime::anime` | Cookie jar de `reqwest`; POST con `X-CSRF-TOKEN`. La API pagina de 16 en 16 con la página **en la ruta** (`.../ajax/episodes/<id>/<página>`; `?p=` se ignora). Tipo desde `<span>Tipo:</span>` |
 | `scrape_episode`: jkplayer → jk.php → `var servers` (Mediafire) | `jkanime::episode` | Misma cadena y mismo orden. La URL `atob(...)` se decodifica en base64 |
 | `download_episode` / `download_season` con `yt-dlp --merge-output-format mp4` | `download` | yt-dlp incluido como *sidecar*; progreso leído de su salida y enviado a la interfaz por eventos; cola con N descargas simultáneas |
 | `ffprobe` para saltar episodios ya descargados | `download` | ffprobe incluido junto a ffmpeg |
