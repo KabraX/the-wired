@@ -107,8 +107,20 @@ pub struct ToolsStatus {
 }
 
 async fn version_of(path: &Path, arg: &str) -> Option<String> {
-    let out = command(path).arg(arg).output().await.ok()?;
+    let out = match command(path).arg(arg).output().await {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("no se pudo ejecutar {}: {e}", path.display());
+            return None;
+        }
+    };
     if !out.status.success() {
+        log::warn!(
+            "{} {arg} terminó con {}: {}",
+            path.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -180,7 +192,7 @@ async fn download<R: Runtime>(
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("no se pudo descargar {tool}: {e}"))?;
+        .map_err(|e| format!("no se pudo descargar {tool}: {}", crate::error_chain(&e)))?;
     if !resp.status().is_success() {
         return Err(format!(
             "no se pudo descargar {tool}: HTTP {}",
@@ -191,13 +203,20 @@ async fn download<R: Runtime>(
     let tmp = dest.with_extension("download");
     let mut file = tokio::fs::File::create(&tmp)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("no se pudo crear {}: {e}", tmp.display()))?;
     let mut stream = resp.bytes_stream();
     let mut downloaded = 0u64;
     let mut last_emit = 0u64;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("descarga de {tool} interrumpida: {e}"))?;
-        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        let chunk = chunk.map_err(|e| {
+            format!(
+                "descarga de {tool} interrumpida: {}",
+                crate::error_chain(&e)
+            )
+        })?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("no se pudo escribir {}: {e}", tmp.display()))?;
         downloaded += chunk.len() as u64;
         if downloaded - last_emit > 512 * 1024 {
             last_emit = downloaded;
@@ -214,9 +233,12 @@ async fn download<R: Runtime>(
     }
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
-    tokio::fs::rename(&tmp, dest)
-        .await
-        .map_err(|e| e.to_string())?;
+    // En Windows el antivirus a veces bloquea el .exe recién bajado unos segundos
+    rename_retrying(&tmp, dest).await?;
+    log::info!(
+        "{tool}: descargado ({downloaded} bytes) en {}",
+        dest.display()
+    );
     let _ = app.emit(
         EVENT,
         Progress {
@@ -227,6 +249,31 @@ async fn download<R: Runtime>(
         },
     );
     Ok(())
+}
+
+async fn rename_retrying(from: &Path, to: &Path) -> Result<(), String> {
+    let mut last = None;
+    for attempt in 0..5u64 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)).await;
+        }
+        match tokio::fs::rename(from, to).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                log::warn!(
+                    "no se pudo mover {} a {}: {e}",
+                    from.display(),
+                    to.display()
+                );
+                last = Some(e);
+            }
+        }
+    }
+    Err(format!(
+        "no se pudo guardar {} ({}). ¿Lo bloqueó el antivirus?",
+        to.display(),
+        last.map(|e| e.to_string()).unwrap_or_default()
+    ))
 }
 
 /// Extrae del zip de FFmpeg-Builds el contenido de `bin/` (exe y dll) a `dir`.
@@ -262,12 +309,22 @@ fn extract_ffmpeg_bin(zip_path: &Path, dir: &Path) -> Result<(), String> {
 
 /// Descarga lo que falte (o, con `force_ytdlp`, vuelve a bajar yt-dlp a la carpeta de la app).
 pub async fn install_missing<R: Runtime>(app: &AppHandle<R>) -> Result<ToolsStatus, String> {
+    let result = install_inner(app).await;
+    match &result {
+        Ok(s) => log::info!("herramientas instaladas: {s:?}"),
+        Err(e) => log::error!("instalar herramientas: {e}"),
+    }
+    result
+}
+
+async fn install_inner<R: Runtime>(app: &AppHandle<R>) -> Result<ToolsStatus, String> {
     let dir = tools_dir()
         .ok_or("carpeta de herramientas no inicializada")?
         .clone();
+    log::info!("instalando herramientas en {}", dir.display());
     tokio::fs::create_dir_all(&dir)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("no se pudo crear {}: {e}", dir.display()))?;
 
     if locate("yt-dlp").1 == Source::Missing {
         let dest = dir.join(format!("yt-dlp{EXE}"));
@@ -301,6 +358,7 @@ pub async fn update_ytdlp() -> Result<String, String> {
         (Some(p), Source::App) => {
             let out = command(&p).arg("-U").output().await.map_err(|e| e.to_string())?;
             let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            log::info!("yt-dlp -U ({}):\n{}", out.status, text.trim());
             let last = text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("").to_string();
             if out.status.success() { Ok(last) } else { Err(last) }
         }

@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{Semaphore, watch};
 
 use crate::jkanime::{JkClient, JkError, episode};
-use crate::library;
+use crate::library::{self, Layout};
 use crate::tools;
 
 /// Evento que recibe la interfaz cada vez que cambia un trabajo.
@@ -89,6 +89,17 @@ pub struct Job {
     /// Reintentos automáticos ya hechos.
     #[serde(default)]
     pub attempts: u32,
+}
+
+impl Job {
+    /// "Elfen Lied T1 E3" (o "Akira (película)") para el registro.
+    pub fn label(&self) -> String {
+        if self.is_movie {
+            format!("{} (película)", self.anime)
+        } else {
+            format!("{} T{} E{}", self.anime, self.season, self.episode)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -220,11 +231,19 @@ impl DownloadManager {
         &self,
         app: &AppHandle<R>,
         library_dir: &Path,
+        layout: Layout,
         requests: Vec<EpisodeRequest>,
     ) -> Vec<u64> {
         let mut ids = Vec::new();
         for req in requests {
-            let output = library::episode_path(library_dir, &req.anime, req.season, req.episode);
+            let output = library::output_path(
+                library_dir,
+                layout,
+                &req.anime,
+                req.is_movie,
+                req.season,
+                req.episode,
+            );
             let job = {
                 let mut inner = self.inner.lock().unwrap();
                 if inner
@@ -251,6 +270,7 @@ impl DownloadManager {
                 job
             };
             ids.push(job.id);
+            log::info!("{}: en cola → {}", job.label(), job.output.display());
             let _ = app.emit(EVENT, &job);
             self.start(app, job.id);
         }
@@ -286,9 +306,18 @@ impl DownloadManager {
             let Some(_permit) = permit else { return };
             let Some(job) = self.get(id) else { return };
 
+            let label = job.label();
             match self.attempt(app, &job, &mut signal).await {
                 Outcome::Finished(status) => {
                     let skipped = matches!(status, Status::Skipped);
+                    log::info!(
+                        "{label}: {}",
+                        if skipped {
+                            "ya estaba en la biblioteca"
+                        } else {
+                            "descargado"
+                        }
+                    );
                     self.set_status(app, id, status);
                     self.finished(app, if skipped { Final::Skipped } else { Final::Done });
                     return;
@@ -299,10 +328,14 @@ impl DownloadManager {
                     let attempts = self.bump_attempts(id);
                     let delay = RETRY_DELAYS.get(attempts as usize - 1).copied();
                     let Some(delay) = delay.filter(|_| transient) else {
+                        log::error!("{label}: falló (intento {attempts}): {message}");
                         self.set_status(app, id, Status::Failed { message });
                         self.finished(app, Final::Failed);
                         return;
                     };
+                    log::warn!(
+                        "{label}: fallo temporal (intento {attempts}), reintento en {delay} s: {message}"
+                    );
                     drop(_permit);
                     let retry_at = now_secs() + delay;
                     self.set_status(
@@ -522,7 +555,10 @@ impl DownloadManager {
             _ = signal.changed() => return stop_outcome(*signal.borrow()),
         };
         let source = match source {
-            Ok(s) => s,
+            Ok(s) => {
+                log::debug!("{}: fuente {:?}", job.label(), s.kind);
+                s
+            }
             Err(e) => {
                 let transient = matches!(e, JkError::Unavailable(_));
                 return Outcome::Failed {
@@ -566,6 +602,7 @@ impl DownloadManager {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                log::error!("no se pudo ejecutar {}: {e}", tools::ytdlp().display());
                 return Outcome::Failed {
                     message: format!("no se pudo ejecutar yt-dlp ({e}). ¿Está instalado?"),
                     transient: false,
@@ -576,15 +613,21 @@ impl DownloadManager {
         let stdout = child.stdout.take().expect("stdout");
         let stderr = child.stderr.take().expect("stderr");
         let mut lines = BufReader::new(stdout).lines();
+        // Última línea con ERROR (para la interfaz) y las últimas líneas (para el registro)
         let errors = tokio::spawn(async move {
             let mut last = String::new();
+            let mut tail = std::collections::VecDeque::new();
             let mut l = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = l.next_line().await {
                 if line.contains("ERROR") {
-                    last = line;
+                    last = line.clone();
                 }
+                if tail.len() == 15 {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
             }
-            last
+            (last, Vec::from(tail).join("\n"))
         });
 
         loop {
@@ -605,8 +648,16 @@ impl DownloadManager {
             }
         }
 
-        let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
-        let err = errors.await.unwrap_or_default();
+        let exit = child.wait().await;
+        let ok = exit.as_ref().map(|s| s.success()).unwrap_or(false);
+        let (err, tail) = errors.await.unwrap_or_default();
+        if !ok {
+            log::warn!(
+                "{}: yt-dlp terminó con {:?}. Últimas líneas:\n{tail}",
+                job.label(),
+                exit.map(|s| s.code())
+            );
+        }
         if ok && tokio::fs::try_exists(&job.output).await.unwrap_or(false) {
             Outcome::Finished(Status::Done)
         } else {
@@ -735,13 +786,15 @@ fn has_partials(output: &Path) -> bool {
 /// Episodios de un anime que ya están completos en la biblioteca.
 pub async fn episodes_on_disk(
     library_dir: &Path,
+    layout: Layout,
     anime: &str,
+    is_movie: bool,
     season: u32,
     numbers: &[u32],
 ) -> Vec<u32> {
     let mut present = Vec::new();
     for &n in numbers {
-        let p = library::episode_path(library_dir, anime, season, n);
+        let p = library::output_path(library_dir, layout, anime, is_movie, season, n);
         if tokio::fs::try_exists(&p).await.unwrap_or(false) && !has_partials(&p) {
             present.push(n);
         }

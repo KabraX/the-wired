@@ -8,19 +8,19 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
-  Spinner,
   Text,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
 import { ChevronLeftRegular, ChevronRightRegular, SearchRegular } from "@fluentui/react-icons";
 import { api, errorMessage, type SearchResult } from "../api";
+import Loading from "../Loading";
 
 const useStyles = makeStyles({
   bar: { display: "flex", gap: tokens.spacingHorizontalS, maxWidth: "640px" },
   grid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+    gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
     gap: tokens.spacingHorizontalL,
   },
   card: { cursor: "pointer" },
@@ -78,7 +78,7 @@ export default function SearchPage({ onOpen }: Props) {
         </Button>
       </form>
 
-      {loading && <Spinner label="Buscando en jkanime…" />}
+      {loading && <Loading label="Buscando en jkanime…" />}
       {error && (
         <MessageBar intent="error">
           <MessageBarBody>{error}</MessageBarBody>

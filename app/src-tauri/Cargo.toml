@@ -36,6 +36,9 @@ zip = { version = "9.1.1", default-features = false, features = ["deflate"] }
 futures-util = "0.3.34"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
+log = "0.4.34"
+tauri-plugin-log = "2.10.1"
+tauri-plugin-clipboard-manager = "2.5.0"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

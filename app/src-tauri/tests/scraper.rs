@@ -62,6 +62,7 @@ fn anime_page_fields() {
     let p = anime::parse_anime_page(&fixture("anime.html"));
     assert_eq!(p.title.as_deref(), Some("Elfen Lied"));
     assert_eq!(p.kind.as_deref(), Some("Serie"));
+    assert_eq!(p.quality.as_deref(), Some("1080p"));
     assert_eq!(p.csrf.as_deref(), Some("TOKEN_FALSO"));
     assert_eq!(
         p.episodes_api.as_deref(),
@@ -254,4 +255,42 @@ async fn live_paginated_episodes() {
         (1..=numbers.len() as u32).collect::<Vec<_>>(),
         "episodios consecutivos sin huecos"
     );
+}
+
+#[test]
+fn simple_layout_has_no_seasons() {
+    use library::Layout;
+    let lib = Path::new("/lib/Anime");
+    assert_eq!(
+        library::output_path(lib, Layout::Simple, "Re:Zero", false, 2, 15),
+        Path::new("/lib/Anime/ReZero/ReZero - 15.mp4")
+    );
+    assert_eq!(
+        library::output_path(lib, Layout::Simple, "Akira", true, 1, 1),
+        Path::new("/lib/Anime/Akira/Akira.mp4")
+    );
+    assert_eq!(
+        library::output_path(lib, Layout::Jellyfin, "Re:Zero", false, 2, 15),
+        library::episode_path(lib, "Re:Zero", 2, 15)
+    );
+}
+
+#[test]
+fn season_from_jkanime_titles() {
+    let s = |t: &str| library::split_season(t);
+    assert_eq!(s("Elfen Lied"), ("Elfen Lied".into(), 1));
+    assert_eq!(
+        s("Shingeki no Kyojin Season 2"),
+        ("Shingeki no Kyojin".into(), 2)
+    );
+    assert_eq!(
+        s("Kimetsu no Yaiba: 2nd Season"),
+        ("Kimetsu no Yaiba".into(), 2)
+    );
+    assert_eq!(s("Dr. Stone 3rd Season"), ("Dr. Stone".into(), 3));
+    assert_eq!(s("Overlord II"), ("Overlord".into(), 2));
+    assert_eq!(s("Overlord IV"), ("Overlord".into(), 4));
+    // Números que forman parte del nombre no son temporadas
+    assert_eq!(s("Mob Psycho 100"), ("Mob Psycho 100".into(), 1));
+    assert_eq!(s("Steins;Gate 0"), ("Steins;Gate 0".into(), 1));
 }

@@ -13,6 +13,9 @@ pub struct Settings {
     pub library_dir: PathBuf,
     /// Descargas a la vez (episodios). Los cambios se aplican al reiniciar la app.
     pub concurrent_downloads: u32,
+    /// Carpetas `Season NN` y nombres `S01E01` (formato Jellyfin). Si no, todo en la
+    /// carpeta del anime.
+    pub jellyfin_layout: bool,
 }
 
 impl Default for Settings {
@@ -20,6 +23,7 @@ impl Default for Settings {
         Self {
             library_dir: library::default_library_dir(),
             concurrent_downloads: 2,
+            jellyfin_layout: true,
         }
     }
 }
@@ -42,5 +46,9 @@ impl Settings {
     pub fn sanitized(mut self) -> Self {
         self.concurrent_downloads = self.concurrent_downloads.clamp(1, 6);
         self
+    }
+
+    pub fn layout(&self) -> library::Layout {
+        library::Layout::from_jellyfin(self.jellyfin_layout)
     }
 }

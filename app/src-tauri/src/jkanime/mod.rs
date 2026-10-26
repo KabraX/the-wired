@@ -106,7 +106,10 @@ impl JkClient {
                             .map_err(|e| JkError::Unavailable(e.to_string()));
                     }
                     StatusCode::NOT_FOUND => return Err(JkError::NotFound(url.to_string())),
-                    s if s.is_server_error() => last = format!("HTTP {} en {url}", s.as_u16()),
+                    s if s.is_server_error() => {
+                        last = format!("HTTP {} en {url}", s.as_u16());
+                        log::warn!("jkanime: {last} (intento {})", attempt + 1);
+                    }
                     s => {
                         return Err(JkError::Unavailable(format!(
                             "HTTP {} en {url}",
@@ -114,7 +117,10 @@ impl JkClient {
                         )));
                     }
                 },
-                Err(e) => last = e.to_string(),
+                Err(e) => {
+                    last = crate::error_chain(&e);
+                    log::warn!("jkanime: {url}: {last} (intento {})", attempt + 1);
+                }
             }
         }
         Err(JkError::Unavailable(last))

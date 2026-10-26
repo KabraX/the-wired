@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use the_wired_lib::download::{DownloadManager, EpisodeRequest, Job, Status};
 use the_wired_lib::jkanime::JkClient;
-use the_wired_lib::library;
+use the_wired_lib::library::{self, Layout};
 
 fn temp_library(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("the-wired-test-{name}-{}", std::process::id()));
@@ -49,8 +49,13 @@ async fn duplicate_requests_are_ignored_while_active() {
     let dm = DownloadManager::new(1, JkClient::new(), None);
     let lib = temp_library("dup");
     // Concurrencia 1: el segundo queda en cola, y repetirlo no crea otro trabajo
-    let first = dm.enqueue(app.handle(), &lib, vec![request(1), request(2)]);
-    let again = dm.enqueue(app.handle(), &lib, vec![request(2)]);
+    let first = dm.enqueue(
+        app.handle(),
+        &lib,
+        Layout::Jellyfin,
+        vec![request(1), request(2)],
+    );
+    let again = dm.enqueue(app.handle(), &lib, Layout::Jellyfin, vec![request(2)]);
     assert_eq!(first.len(), 2);
     assert!(again.is_empty(), "el episodio 2 ya estaba en cola");
     for id in first {
@@ -85,7 +90,7 @@ async fn existing_complete_file_is_skipped() {
         eprintln!("ffmpeg no disponible: prueba omitida");
         return;
     }
-    let ids = dm.enqueue(app.handle(), &lib, vec![request(3)]);
+    let ids = dm.enqueue(app.handle(), &lib, Layout::Jellyfin, vec![request(3)]);
     let job = wait_for(&dm, ids[0], 20, |s| {
         matches!(s, Status::Skipped | Status::Failed { .. })
     })
@@ -104,7 +109,7 @@ async fn live_download_progress_and_cancel() {
     let app = tauri::test::mock_app();
     let dm = DownloadManager::new(1, JkClient::new(), None);
     let lib = temp_library("live");
-    let ids = dm.enqueue(app.handle(), &lib, vec![request(1)]);
+    let ids = dm.enqueue(app.handle(), &lib, Layout::Jellyfin, vec![request(1)]);
     let id = ids[0];
 
     let job = wait_for(&dm, id, 120, |s| {
@@ -160,7 +165,12 @@ async fn temporary_failure_waits_to_retry() {
     let app = tauri::test::mock_app();
     let dm = DownloadManager::new(1, JkClient::new(), None);
     let lib = temp_library("retry");
-    let id = dm.enqueue(app.handle(), &lib, vec![unreachable_request(1)])[0];
+    let id = dm.enqueue(
+        app.handle(),
+        &lib,
+        Layout::Jellyfin,
+        vec![unreachable_request(1)],
+    )[0];
     let job = wait_for(&dm, id, 60, |s| {
         matches!(s, Status::Waiting { .. } | Status::Failed { .. })
     })
@@ -194,6 +204,7 @@ async fn queue_is_saved_and_restored() {
         let ids = dm.enqueue(
             app.handle(),
             &lib,
+            Layout::Jellyfin,
             vec![unreachable_request(1), unreachable_request(2)],
         );
         // El segundo queda pausado antes de empezar
@@ -221,7 +232,12 @@ async fn queue_is_saved_and_restored() {
         jobs[1].status
     );
     // Los ids nuevos no chocan con los restaurados
-    let new = dm.enqueue(app.handle(), &lib, vec![unreachable_request(3)]);
+    let new = dm.enqueue(
+        app.handle(),
+        &lib,
+        Layout::Jellyfin,
+        vec![unreachable_request(3)],
+    );
     assert!(new[0] > jobs.iter().map(|j| j.id).max().unwrap());
     for j in dm.jobs() {
         dm.cancel(app.handle(), j.id);

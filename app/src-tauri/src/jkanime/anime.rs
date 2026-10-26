@@ -20,6 +20,8 @@ pub struct AnimeInfo {
     pub image: Option<String>,
     /// "Serie", "Pelicula", "OVA"…
     pub kind: Option<String>,
+    /// "1080p", "720p"… según la ficha (no todas lo indican).
+    pub quality: Option<String>,
     pub is_movie: bool,
     pub episodes: Vec<Episode>,
 }
@@ -30,6 +32,7 @@ pub struct AnimePage {
     pub title: Option<String>,
     pub image: Option<String>,
     pub kind: Option<String>,
+    pub quality: Option<String>,
     pub csrf: Option<String>,
     pub episodes_api: Option<String>,
     /// "Episodios: 13" de la ficha, como respaldo si la API falla.
@@ -61,6 +64,11 @@ pub fn parse_anime_page(html: &str) -> AnimePage {
         .captures(html)
         .map(|c| c[1].trim().to_string())
         .filter(|k| !k.is_empty());
+    let quality = Regex::new(r"<span>Calidad:</span>\s*([^<]+)")
+        .unwrap()
+        .captures(html)
+        .map(|c| c[1].trim().to_string())
+        .filter(|q| !q.is_empty());
     let declared_episodes = Regex::new(r"<span>Episodios:</span>\s*(\d+)")
         .unwrap()
         .captures(html)
@@ -70,6 +78,7 @@ pub fn parse_anime_page(html: &str) -> AnimePage {
         title,
         image,
         kind,
+        quality,
         csrf,
         episodes_api,
         declared_episodes,
@@ -171,6 +180,7 @@ pub async fn fetch_anime(client: &JkClient, url: &str) -> Result<AnimeInfo> {
         title,
         image: page.image,
         kind: page.kind,
+        quality: page.quality,
         is_movie,
         episodes,
     })

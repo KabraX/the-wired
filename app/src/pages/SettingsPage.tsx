@@ -10,14 +10,17 @@ import {
   MessageBar,
   MessageBarBody,
   SpinButton,
-  Spinner,
+  Switch,
   Text,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
-import { ArrowSyncRegular, FolderRegular } from "@fluentui/react-icons";
+import { ArrowSyncRegular, DocumentRegular, FolderRegular } from "@fluentui/react-icons";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type Settings, type ToolSource, type ToolsStatus } from "../api";
+import Loading from "../Loading";
+import CopyLogButton from "../CopyLogButton";
 import { ACCENTS, type ThemeMode, type ThemePrefs } from "../theme";
 
 type UpdateResult = { ok: boolean; text: string };
@@ -74,7 +77,7 @@ export default function SettingsPage({ tools, onToolsChanged, themePrefs, onThem
   return (
     <div className={styles.form}>
       <Subtitle2>Biblioteca y descargas</Subtitle2>
-      <Field label="Carpeta de la biblioteca de anime" hint="Las descargas se guardan como <carpeta>/<Anime>/Season 01/<Anime> - S01E01.mp4, el formato que espera Jellyfin.">
+      <Field label="Carpeta de la biblioteca de anime">
         <div className={styles.row}>
           <Input style={{ flex: 1 }} value={settings.library_dir} readOnly />
           <Button
@@ -87,6 +90,20 @@ export default function SettingsPage({ tools, onToolsChanged, themePrefs, onThem
             Cambiar…
           </Button>
         </div>
+      </Field>
+
+      <Field
+        hint={
+          settings.jellyfin_layout
+            ? "Las descargas se guardan como <carpeta>/<Anime>/Season 01/<Anime> - S01E01.mp4, lo que espera Jellyfin."
+            : "Las descargas se guardan como <carpeta>/<Anime>/<Anime> - 01.mp4, sin carpetas de temporada."
+        }
+      >
+        <Switch
+          label="Formato Jellyfin"
+          checked={settings.jellyfin_layout}
+          onChange={(_, d) => save({ ...settings, jellyfin_layout: d.checked })}
+        />
       </Field>
 
       <Field label="Descargas a la vez" hint="Se aplica al reiniciar la app.">
@@ -114,7 +131,7 @@ export default function SettingsPage({ tools, onToolsChanged, themePrefs, onThem
           </Text>
           {tools?.ytdlp.source !== "missing" && (
             <Button
-              icon={updating ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
+              icon={updating ? <Loading size={16} /> : <ArrowSyncRegular />}
               disabled={updating}
               onClick={async () => {
                 setUpdating(true);
@@ -144,6 +161,20 @@ export default function SettingsPage({ tools, onToolsChanged, themePrefs, onThem
           <MessageBarBody>{update.text}</MessageBarBody>
         </MessageBar>
       )}
+
+      <Subtitle2>Registro</Subtitle2>
+      <Field hint="Si algo falla, copia el registro y envíalo junto con el aviso: incluye la versión, el sistema, las herramientas y lo último que hizo la app. Contiene rutas de tu equipo, pero no contraseñas.">
+        <div className={styles.row}>
+          <CopyLogButton />
+          <Button
+            icon={<DocumentRegular />}
+            appearance="subtle"
+            onClick={async () => revealItemInDir(await api.logFile())}
+          >
+            Mostrar el archivo
+          </Button>
+        </div>
+      </Field>
 
       <Subtitle2>Tema</Subtitle2>
       <Field label="Modo">

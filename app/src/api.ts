@@ -16,11 +16,12 @@ export type AnimeInfo = {
   title: string;
   image: string | null;
   kind: string | null;
+  quality: string | null;
   is_movie: boolean;
   episodes: Episode[];
 };
 
-export type Settings = { library_dir: string; concurrent_downloads: number };
+export type Settings = { library_dir: string; concurrent_downloads: number; jellyfin_layout: boolean };
 
 export type AppInfo = { version: string; os: string; arch: string };
 
@@ -94,9 +95,13 @@ export const api = {
   pauseAll: () => invoke<void>("pause_all_downloads"),
   resumeAll: () => invoke<void>("resume_all_downloads"),
   clearFinished: () => invoke<void>("clear_finished_downloads"),
-  episodesOnDisk: (anime: string, season: number, episodes: number[]) =>
-    invoke<number[]>("episodes_on_disk", { anime, season, episodes }),
+  episodesOnDisk: (anime: string, isMovie: boolean, season: number, episodes: number[]) =>
+    invoke<number[]>("episodes_on_disk", { anime, isMovie, season, episodes }),
+  seasonsOnDisk: (anime: string) => invoke<number[]>("seasons_on_disk", { anime }),
+  splitSeason: (title: string) => invoke<[string, number]>("split_season", { title }),
   animeFolder: (anime: string) => invoke<string>("anime_folder", { anime }),
+  readLog: () => invoke<string>("read_log"),
+  logFile: () => invoke<string>("log_file"),
   updateYtdlp: () => invoke<string>("update_ytdlp"),
   toolsStatus: () => invoke<ToolsStatus>("tools_status"),
   installTools: () => invoke<ToolsStatus>("install_tools"),

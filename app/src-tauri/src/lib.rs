@@ -14,6 +14,22 @@ use serde::{Deserialize, Serialize};
 use settings::Settings;
 use tauri::{AppHandle, Manager, State};
 
+/// Nombre del archivo de registro (sin `.log`) en la carpeta de logs de la app.
+const LOG_FILE: &str = "the-wired";
+
+/// Un error con todas sus causas: reqwest, por ejemplo, solo dice "error sending request"
+/// y el motivo real (DNS, TLS, proxy…) está en `source()`.
+pub fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut cur = e.source();
+    while let Some(s) = cur {
+        text.push_str(": ");
+        text.push_str(&s.to_string());
+        cur = s.source();
+    }
+    text
+}
+
 /// Si hay icono en la bandeja (si no, cerrar la ventana cierra la app).
 struct HasTray(bool);
 
@@ -110,7 +126,10 @@ fn enqueue_downloads(
     settings: State<'_, SettingsState>,
     args: DownloadArgs,
 ) -> Vec<u64> {
-    let library_dir = settings.settings.lock().unwrap().library_dir.clone();
+    let (library_dir, layout) = {
+        let s = settings.settings.lock().unwrap();
+        (s.library_dir.clone(), s.layout())
+    };
     let season = args.season.max(1);
     let requests = args
         .episodes
@@ -123,7 +142,7 @@ fn enqueue_downloads(
             episode,
         })
         .collect();
-    downloads.enqueue(&app, &library_dir, requests)
+    downloads.enqueue(&app, &library_dir, layout, requests)
 }
 
 #[tauri::command]
@@ -166,11 +185,36 @@ fn clear_finished_downloads(downloads: State<'_, DownloadManager>) {
 async fn episodes_on_disk(
     settings: State<'_, SettingsState>,
     anime: String,
+    is_movie: bool,
     season: u32,
     episodes: Vec<u32>,
 ) -> Result<Vec<u32>, String> {
+    let (library_dir, layout) = {
+        let s = settings.settings.lock().unwrap();
+        (s.library_dir.clone(), s.layout())
+    };
+    Ok(download::episodes_on_disk(
+        &library_dir,
+        layout,
+        &anime,
+        is_movie,
+        season.max(1),
+        &episodes,
+    )
+    .await)
+}
+
+/// Temporadas de un anime que ya tienen episodios en la biblioteca (formato Jellyfin).
+#[tauri::command]
+fn seasons_on_disk(settings: State<'_, SettingsState>, anime: String) -> Vec<u32> {
     let library_dir = settings.settings.lock().unwrap().library_dir.clone();
-    Ok(download::episodes_on_disk(&library_dir, &anime, season.max(1), &episodes).await)
+    library::seasons_on_disk(&library_dir, &anime)
+}
+
+/// Nombre de la serie y temporada que se deducen del título de jkanime.
+#[tauri::command]
+fn split_season(title: String) -> (String, u32) {
+    library::split_season(&title)
 }
 
 /// Carpeta del anime en la biblioteca (para el botón "Abrir carpeta").
@@ -183,6 +227,39 @@ fn anime_folder(settings: State<'_, SettingsState>, anime: String) -> String {
         .to_string()
 }
 
+/// Registro para adjuntar a un aviso de error: datos del equipo, herramientas y las
+/// últimas líneas del archivo de log.
+#[tauri::command]
+async fn read_log(app: AppHandle) -> Result<String, String> {
+    let path = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| e.to_string())?
+        .join(format!("{LOG_FILE}.log"));
+    let tools = tools::status().await;
+    let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(400)..].join("\n");
+    Ok(format!(
+        "the-wired {} · {} {}\nyt-dlp: {:?} {}\nffmpeg: {:?} {}\nRegistro: {}\n\n{tail}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tools.ytdlp.source,
+        tools.ytdlp.version.as_deref().unwrap_or("-"),
+        tools.ffmpeg.source,
+        tools.ffmpeg.version.as_deref().unwrap_or("-"),
+        path.display(),
+    ))
+}
+
+/// Ruta del archivo de registro (para "Mostrar en la carpeta").
+#[tauri::command]
+fn log_file(app: AppHandle) -> Result<String, String> {
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{LOG_FILE}.log")).display().to_string())
+}
+
 #[tauri::command]
 async fn update_ytdlp() -> Result<String, String> {
     tools::update_ytdlp().await
@@ -190,7 +267,26 @@ async fn update_ytdlp() -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some(LOG_FILE.into()),
+                    }),
+                ])
+                // Lo nuestro con detalle; de las librerías, solo avisos
+                .level(log::LevelFilter::Warn)
+                .level_for("the_wired_lib", log::LevelFilter::Debug)
+                .level_for("webview", log::LevelFilter::Info)
+                .max_file_size(1_000_000)
+                .rotation_strategy(RotationStrategy::KeepOne)
+                .timezone_strategy(TimezoneStrategy::UseLocal)
+                .build(),
+        )
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -198,7 +294,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(JkClient::new())
         .setup(|app| {
+            log::info!(
+                "the-wired {} arranca en {} {}",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
             tools::init(&app.path().app_data_dir()?);
+            tauri::async_runtime::spawn(async {
+                let s = tools::status().await;
+                log::info!(
+                    "herramientas: yt-dlp {:?} {:?} · ffmpeg {:?} {:?}",
+                    s.ytdlp.source,
+                    s.ytdlp.version,
+                    s.ffmpeg.source,
+                    s.ffmpeg.version
+                );
+            });
             let path = app.path().app_config_dir()?.join("settings.json");
             let settings = Settings::load(&path).sanitized();
             let queue_file = app.path().app_data_dir()?.join("downloads.json");
@@ -249,8 +361,12 @@ pub fn run() {
             pause_all_downloads,
             resume_all_downloads,
             episodes_on_disk,
+            seasons_on_disk,
+            split_season,
             anime_folder,
             update_ytdlp,
+            read_log,
+            log_file,
             tools_status,
             install_tools,
         ])

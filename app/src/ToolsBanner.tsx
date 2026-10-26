@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Button, MessageBar, MessageBarActions, MessageBarBody, MessageBarTitle, ProgressBar } from "@fluentui/react-components";
 import { ArrowDownloadRegular } from "@fluentui/react-icons";
 import { api, toolsMissing, type ToolsProgress, type ToolsStatus } from "./api";
+import CopyLogButton from "./CopyLogButton";
 
 type Props = { status: ToolsStatus | null; onChange: (s: ToolsStatus) => void };
 
@@ -42,6 +43,7 @@ export default function ToolsBanner({ status, onChange }: Props) {
         )}
       </MessageBarBody>
       <MessageBarActions>
+        {error && <CopyLogButton />}
         <Button
           appearance="primary"
           icon={<ArrowDownloadRegular />}
@@ -59,7 +61,7 @@ export default function ToolsBanner({ status, onChange }: Props) {
             }
           }}
         >
-          Descargar
+          {error ? "Reintentar" : "Descargar"}
         </Button>
       </MessageBarActions>
     </MessageBar>
