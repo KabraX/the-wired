@@ -731,7 +731,7 @@ END
         token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
         api_url_base=$(grep -oP "url:\s*'\Khttps://jkanime\.net/ajax/episodes/\d+/?" "$url_without_https/index.html")
 
-        if [ ! -z "$api_url_base" ] && [ ! -z "$token" ]; then
+        if [ -n "$api_url_base" ] && [ -n "$token" ]; then
 
             json_response=$(curl -s -X POST "${api_url_base}" \
                 -b cookies.txt \
@@ -745,7 +745,7 @@ END
         token=$(curl -s -c cookies.txt "$nuevaurl" | grep -oP 'meta name="csrf-token" content="\K[^"]+')
         api_url_base=$(grep -oP "url:\s*'\Khttps://jkanime\.net/ajax/episodes/\d+/?" "$url_without_https")
 
-        if [ ! -z "$api_url_base" ] && [ ! -z "$token" ]; then
+        if [ -n "$api_url_base" ] && [ -n "$token" ]; then
 
             json_response=$(curl -s -X POST "${api_url_base}" \
                 -b cookies.txt \
