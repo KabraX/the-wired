@@ -47,10 +47,23 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Firma de las actualizaciones (la app solo acepta actualizaciones firmadas con esta clave)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
           tagName: ${{ github.ref_name }}
-          releaseName: "the-wired app ${{ github.ref_name }}"
-          releaseBody: "Instaladores de la app de escritorio. El script de terminal se instala con git clone + ./install.sh."
+          releaseName: "the-wired ${{ github.ref_name }}"
+          releaseBody: |
+            App de escritorio de the-wired para Windows y Linux.
+
+            **Windows:** `the-wired_*_x64-setup.exe` (recomendado) o `.msi`.
+            **Linux:** `.AppImage` (cualquier distro), `.deb` (Debian/Ubuntu) o `.rpm` (Fedora/openSUSE).
+
+            La primera vez la app descarga yt-dlp (y ffmpeg en Windows) desde sus repositorios oficiales.
+            El script de terminal se sigue instalando con `git clone` + `./install.sh`.
+          # Borrador: se revisa antes de publicarlo. Al publicarlo pasa a ser la "latest"
+          # y las apps instaladas encuentran la actualización en latest.json.
           releaseDraft: true
-          prerelease: true
+          prerelease: false
+          includeUpdaterJson: true

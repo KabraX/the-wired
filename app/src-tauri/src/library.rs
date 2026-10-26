@@ -9,12 +9,20 @@ use std::path::{Path, PathBuf};
 /// puntos finales. Se aplica en todos los sistemas, igual que el script, para que la
 /// biblioteca funcione en Windows y Linux. Conserva acentos y demás Unicode.
 pub fn sanitize_filename(name: &str) -> String {
-    let cleaned: String = name.chars().filter(|c| !"<>:\"/\\|?*".contains(*c)).collect();
-    cleaned.trim_end_matches(|c: char| c.is_whitespace() || c == '.').to_string()
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !"<>:\"/\\|?*".contains(*c))
+        .collect();
+    cleaned
+        .trim_end_matches(|c: char| c.is_whitespace() || c == '.')
+        .to_string()
 }
 
 pub fn episode_filename(anime: &str, season: u32, episode: u32) -> String {
-    format!("{} - S{season:02}E{episode:02}.mp4", sanitize_filename(anime))
+    format!(
+        "{} - S{season:02}E{episode:02}.mp4",
+        sanitize_filename(anime)
+    )
 }
 
 pub fn episode_path(library: &Path, anime: &str, season: u32, episode: u32) -> PathBuf {
@@ -45,7 +53,10 @@ fn home_dir() -> PathBuf {
 /// Carpeta de Vídeos del usuario: XDG en Linux; en Windows, `%USERPROFILE%\Videos`.
 fn dirs_videos() -> Option<PathBuf> {
     if cfg!(target_os = "linux") {
-        let out = std::process::Command::new("xdg-user-dir").arg("VIDEOS").output().ok()?;
+        let out = std::process::Command::new("xdg-user-dir")
+            .arg("VIDEOS")
+            .output()
+            .ok()?;
         let p = String::from_utf8(out.stdout).ok()?.trim().to_string();
         let home = home_dir();
         (!p.is_empty() && Path::new(&p) != home).then(|| PathBuf::from(p))

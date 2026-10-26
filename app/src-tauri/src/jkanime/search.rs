@@ -3,7 +3,7 @@
 use scraper::{Html, Selector};
 use serde::Serialize;
 
-use super::{JkClient, JkError, Result, BASE_URL};
+use super::{BASE_URL, JkClient, JkError, Result};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchResult {
@@ -55,13 +55,24 @@ pub fn parse_search(html: &str) -> Vec<SearchResult> {
                 .select(&li)
                 .find(|e| !e.value().classes().any(|c| c == "anime"))
                 .and_then(|e| text_of(&e));
-            Some(SearchResult { title, url, image, kind, status })
+            Some(SearchResult {
+                title,
+                url,
+                image,
+                kind,
+                status,
+            })
         })
         .collect()
 }
 
 fn text_of(e: &scraper::ElementRef) -> Option<String> {
-    let t = e.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    let t = e
+        .text()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     (!t.is_empty()).then_some(t)
 }
 
@@ -76,7 +87,9 @@ pub async fn search(client: &JkClient, query: &str, page: u32) -> Result<Vec<Sea
             // Una página con contenido pero sin el contenedor de resultados ni el
             // formulario de búsqueda no es la página que esperamos.
             if results.is_empty() && !html.contains("anime__item") && !html.contains("buscar") {
-                return Err(JkError::SiteChanged("la página de búsqueda no tiene el formato esperado".into()));
+                return Err(JkError::SiteChanged(
+                    "la página de búsqueda no tiene el formato esperado".into(),
+                ));
             }
             Ok(results)
         }

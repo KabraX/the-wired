@@ -11,7 +11,9 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { ArrowDownloadRegular, SearchRegular, SettingsRegular } from "@fluentui/react-icons";
-import { api, isFinished, type AppInfo, type Job, type SearchResult } from "./api";
+import { api, isFinished, type AppInfo, type Job, type SearchResult, type ToolsStatus } from "./api";
+import ToolsBanner from "./ToolsBanner";
+import UpdateBanner from "./UpdateBanner";
 import SearchPage from "./pages/SearchPage";
 import AnimePage from "./pages/AnimePage";
 import DownloadsPage from "./pages/DownloadsPage";
@@ -75,11 +77,14 @@ export default function App() {
   const [opened, setOpened] = useState<SearchResult | null>(null);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [tools, setTools] = useState<ToolsStatus | null>(null);
+  const reloadTools = useCallback(() => api.toolsStatus().then(setTools), []);
 
   const reloadJobs = useCallback(() => api.listDownloads().then(setJobs), []);
 
   useEffect(() => {
     api.appInfo().then(setInfo).catch(() => setInfo(null));
+    reloadTools();
     reloadJobs();
     // Cada cambio de una descarga llega como evento desde Rust
     const un = listen<Job>("download-updated", ({ payload }) =>
@@ -94,7 +99,7 @@ export default function App() {
     return () => {
       un.then((f) => f());
     };
-  }, [reloadJobs]);
+  }, [reloadJobs, reloadTools]);
 
   const active = jobs.filter((j) => !isFinished(j)).length;
   // La búsqueda se conserva al entrar en un anime y volver
@@ -117,6 +122,8 @@ export default function App() {
           </Text>
         </nav>
         <main className={styles.content}>
+          <UpdateBanner />
+          <ToolsBanner status={tools} onChange={setTools} />
           {!(page === "buscar" && opened) && <Title2>{titles[page]}</Title2>}
           <div style={{ display: page === "buscar" && !opened ? "contents" : "none" }}>{searchPage}</div>
           {page === "buscar" && opened && (
@@ -124,8 +131,8 @@ export default function App() {
           )}
           {page === "descargas" && <DownloadsPage jobs={jobs} onChanged={reloadJobs} />}
           {page === "ajustes" && <SettingsPage
-              info={info}
-              onInfoChanged={() => api.appInfo().then(setInfo)}
+              tools={tools}
+              onToolsChanged={reloadTools}
               themePrefs={prefs}
               onThemeChange={changePrefs}
             />}

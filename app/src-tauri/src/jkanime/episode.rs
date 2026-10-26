@@ -1,11 +1,11 @@
 //! Fuente de vídeo de un episodio. Misma cadena y orden que `scrape_episode` del script:
 //! 1. jkplayer (método actual) → 2. jk.php (legacy) → 3. Mediafire desde `var servers`.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::{JkClient, JkError, Result, BASE_URL};
+use super::{BASE_URL, JkClient, JkError, Result};
 
 /// De dónde salió la URL, para mostrarlo y para depurar cuando la web cambie.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -37,12 +37,18 @@ pub fn episode_url(anime_url: &str, number: u32, is_movie: bool) -> String {
 
 /// Ruta tras `jkplayer/` en la página del episodio (`um?e=...`).
 pub fn extract_jkplayer_path(html: &str) -> Option<String> {
-    Regex::new(r#"jkplayer/(um[^"'<> ]*)"#).unwrap().captures(html).map(|c| c[1].to_string())
+    Regex::new(r#"jkplayer/(um[^"'<> ]*)"#)
+        .unwrap()
+        .captures(html)
+        .map(|c| c[1].to_string())
 }
 
 /// Parte tras `/jk.php` en el `<iframe>` del episodio (método legacy).
 pub fn extract_jkphp_path(html: &str) -> Option<String> {
-    Regex::new(r#"<iframe[^>]+src="/jk\.php([^"]*)""#).unwrap().captures(html).map(|c| c[1].to_string())
+    Regex::new(r#"<iframe[^>]+src="/jk\.php([^"]*)""#)
+        .unwrap()
+        .captures(html)
+        .map(|c| c[1].to_string())
 }
 
 /// URL del vídeo dentro del bloque `video: { url: '...' }` del reproductor.
@@ -50,7 +56,9 @@ pub fn extract_jkphp_path(html: &str) -> Option<String> {
 pub fn extract_player_video_url(html: &str) -> Option<String> {
     let start = html.find("video: {")?;
     let block = &html[start..html.len().min(start + 2000)];
-    let caps = Regex::new(r#"url:\s*(?:atob\(\s*)?'([^']+)'"#).unwrap().captures(block)?;
+    let caps = Regex::new(r#"url:\s*(?:atob\(\s*)?'([^']+)'"#)
+        .unwrap()
+        .captures(block)?;
     let raw = caps[1].trim();
     if raw.starts_with("http") {
         return Some(raw.to_string());
@@ -93,7 +101,11 @@ pub fn extract_mediafire_download(html: &str) -> Option<String> {
     Regex::new(r#"href="(https://download[^"]+)""#)
         .unwrap()
         .captures(html)
-        .or_else(|| Regex::new(r#"(https://download[^"' ]+)"#).unwrap().captures(html))
+        .or_else(|| {
+            Regex::new(r#"(https://download[^"' ]+)"#)
+                .unwrap()
+                .captures(html)
+        })
         .map(|c| c[1].to_string())
 }
 
@@ -108,24 +120,43 @@ pub async fn fetch_video_source(
     let html = client.get_text(&ep_url, None).await?;
 
     if let Some(path) = extract_jkplayer_path(&html) {
-        let player = client.get_text(&format!("{BASE_URL}/jkplayer/{path}"), Some(&ep_url)).await;
+        let player = client
+            .get_text(&format!("{BASE_URL}/jkplayer/{path}"), Some(&ep_url))
+            .await;
         if let Some(url) = player.ok().as_deref().and_then(extract_player_video_url) {
-            return Ok(VideoSource { url, kind: SourceKind::Jkplayer, referer: ep_url });
+            return Ok(VideoSource {
+                url,
+                kind: SourceKind::Jkplayer,
+                referer: ep_url,
+            });
         }
     }
 
     if let Some(path) = extract_jkphp_path(&html) {
-        let player = client.get_text(&format!("{BASE_URL}/jk.php{path}"), Some(&ep_url)).await;
+        let player = client
+            .get_text(&format!("{BASE_URL}/jk.php{path}"), Some(&ep_url))
+            .await;
         if let Some(url) = player.ok().as_deref().and_then(extract_player_video_url) {
-            return Ok(VideoSource { url, kind: SourceKind::Jkphp, referer: ep_url });
+            return Ok(VideoSource {
+                url,
+                kind: SourceKind::Jkphp,
+                referer: ep_url,
+            });
         }
     }
 
     if let Some(mf) = mediafire_page_url(&extract_servers(&html))
         && let Ok(page) = client.get_text(&mf, None).await
-            && let Some(url) = extract_mediafire_download(&page) {
-                return Ok(VideoSource { url, kind: SourceKind::Mediafire, referer: mf });
-            }
+        && let Some(url) = extract_mediafire_download(&page)
+    {
+        return Ok(VideoSource {
+            url,
+            kind: SourceKind::Mediafire,
+            referer: mf,
+        });
+    }
 
-    Err(JkError::SiteChanged(format!("no se encontró ninguna fuente de vídeo en {ep_url}")))
+    Err(JkError::SiteChanged(format!(
+        "no se encontró ninguna fuente de vídeo en {ep_url}"
+    )))
 }

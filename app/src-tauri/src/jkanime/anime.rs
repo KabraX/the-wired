@@ -39,9 +39,11 @@ pub struct AnimePage {
 pub fn parse_anime_page(html: &str) -> AnimePage {
     let doc = Html::parse_document(html);
     let meta = |sel: &str| {
-        Selector::parse(sel)
-            .ok()
-            .and_then(|s| doc.select(&s).next().and_then(|e| e.value().attr("content").map(str::to_string)))
+        Selector::parse(sel).ok().and_then(|s| {
+            doc.select(&s)
+                .next()
+                .and_then(|e| e.value().attr("content").map(str::to_string))
+        })
     };
     let csrf = meta(r#"meta[name="csrf-token"]"#);
     let image = meta(r#"meta[property="og:image"]"#);
@@ -64,7 +66,14 @@ pub fn parse_anime_page(html: &str) -> AnimePage {
         .captures(html)
         .and_then(|c| c[1].parse().ok());
 
-    AnimePage { title, image, kind, csrf, episodes_api, declared_episodes }
+    AnimePage {
+        title,
+        image,
+        kind,
+        csrf,
+        episodes_api,
+        declared_episodes,
+    }
 }
 
 /// Respuesta paginada de `ajax/episodes/<id>/` (formato Laravel).
@@ -116,7 +125,9 @@ pub async fn fetch_anime(client: &JkClient, url: &str) -> Result<AnimeInfo> {
         let mut p = 1;
         loop {
             // La web pide las páginas como `.../ajax/episodes/<id>/<página>` (16 por página)
-            let json = client.post_ajax(&episodes_page_url(api, p), csrf, &page_url).await?;
+            let json = client
+                .post_ajax(&episodes_page_url(api, p), csrf, &page_url)
+                .await?;
             let resp = parse_episodes_json(&json)?;
             if resp.current_page != p {
                 return Err(JkError::SiteChanged(format!(
@@ -137,14 +148,30 @@ pub async fn fetch_anime(client: &JkClient, url: &str) -> Result<AnimeInfo> {
 
     // Respaldo: si la API no dio nada pero la ficha declara episodios, numerarlos.
     if episodes.is_empty() {
-        let n = page.declared_episodes.unwrap_or(if is_movie { 1 } else { 0 });
+        let n = page
+            .declared_episodes
+            .unwrap_or(if is_movie { 1 } else { 0 });
         if n == 0 {
-            return Err(JkError::SiteChanged("no se encontró la lista de episodios".into()));
+            return Err(JkError::SiteChanged(
+                "no se encontró la lista de episodios".into(),
+            ));
         }
-        episodes = (1..=n).map(|i| Episode { number: i, title: format!("{title} - {i}") }).collect();
+        episodes = (1..=n)
+            .map(|i| Episode {
+                number: i,
+                title: format!("{title} - {i}"),
+            })
+            .collect();
     }
     episodes.sort_by_key(|e| e.number);
     episodes.dedup_by_key(|e| e.number);
 
-    Ok(AnimeInfo { url, title, image: page.image, kind: page.kind, is_movie, episodes })
+    Ok(AnimeInfo {
+        url,
+        title,
+        image: page.image,
+        kind: page.kind,
+        is_movie,
+        episodes,
+    })
 }

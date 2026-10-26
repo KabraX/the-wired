@@ -22,7 +22,16 @@ export type AnimeInfo = {
 
 export type Settings = { library_dir: string; concurrent_downloads: number };
 
-export type AppInfo = { version: string; os: string; arch: string; ytdlp: string | null };
+export type AppInfo = { version: string; os: string; arch: string };
+
+export type ToolSource = "app" | "system" | "missing";
+export type ToolStatus = { source: ToolSource; version: string | null };
+export type ToolsStatus = { ytdlp: ToolStatus; ffmpeg: ToolStatus; can_install_ffmpeg: boolean };
+export type ToolsProgress = { tool: string; downloaded: number; total: number | null; done: boolean };
+
+/** Falta algo que la app puede instalar sola. */
+export const toolsMissing = (t: ToolsStatus) =>
+  t.ytdlp.source === "missing" || (t.can_install_ffmpeg && t.ffmpeg.source === "missing");
 
 export type JobStatus =
   | { state: "queued" }
@@ -82,6 +91,8 @@ export const api = {
     invoke<number[]>("episodes_on_disk", { anime, season, episodes }),
   animeFolder: (anime: string) => invoke<string>("anime_folder", { anime }),
   updateYtdlp: () => invoke<string>("update_ytdlp"),
+  toolsStatus: () => invoke<ToolsStatus>("tools_status"),
+  installTools: () => invoke<ToolsStatus>("install_tools"),
 };
 
 export function formatSpeed(bps: number | null): string {

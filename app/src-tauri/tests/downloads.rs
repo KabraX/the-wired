@@ -3,6 +3,11 @@
 //!   cargo test --test downloads                         (sin red)
 //!   cargo test --test downloads -- --ignored --nocapture (descarga real unos segundos)
 
+// Usa `tauri::test::mock_app`: en Windows los binarios de test no llevan el manifiesto
+// de la app y Windows no los arranca (STATUS_ENTRYPOINT_NOT_FOUND). La lógica es la
+// misma en ambos sistemas, así que estos tests se ejecutan solo fuera de Windows.
+#![cfg(not(windows))]
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -44,7 +49,12 @@ async fn duplicate_requests_are_ignored_while_active() {
     let dm = DownloadManager::new(1);
     let lib = temp_library("dup");
     // Concurrencia 1: el segundo queda en cola, y repetirlo no crea otro trabajo
-    let first = dm.enqueue(app.handle(), JkClient::new(), &lib, vec![request(1), request(2)]);
+    let first = dm.enqueue(
+        app.handle(),
+        JkClient::new(),
+        &lib,
+        vec![request(1), request(2)],
+    );
     let again = dm.enqueue(app.handle(), JkClient::new(), &lib, vec![request(2)]);
     assert_eq!(first.len(), 2);
     assert!(again.is_empty(), "el episodio 2 ya estaba en cola");
@@ -63,7 +73,15 @@ async fn existing_complete_file_is_skipped() {
     let out = library::episode_path(&lib, "Elfen Lied", 1, 3);
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     let made = std::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-f", "lavfi", "-i", "color=black:s=64x64:d=1", "-y"])
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=64x64:d=1",
+            "-y",
+        ])
         .arg(&out)
         .status()
         .map(|s| s.success())
@@ -73,8 +91,15 @@ async fn existing_complete_file_is_skipped() {
         return;
     }
     let ids = dm.enqueue(app.handle(), JkClient::new(), &lib, vec![request(3)]);
-    let job = wait_for(&dm, ids[0], 20, |s| matches!(s, Status::Skipped | Status::Failed { .. })).await;
-    assert!(matches!(job.status, Status::Skipped), "estado: {:?}", job.status);
+    let job = wait_for(&dm, ids[0], 20, |s| {
+        matches!(s, Status::Skipped | Status::Failed { .. })
+    })
+    .await;
+    assert!(
+        matches!(job.status, Status::Skipped),
+        "estado: {:?}",
+        job.status
+    );
     let _ = std::fs::remove_dir_all(lib);
 }
 
@@ -93,9 +118,16 @@ async fn live_download_progress_and_cancel() {
     })
     .await;
     println!("estado tras arrancar: {:?}", job.status);
-    assert!(matches!(job.status, Status::Downloading { .. }), "no llegó a descargar: {:?}", job.status);
+    assert!(
+        matches!(job.status, Status::Downloading { .. }),
+        "no llegó a descargar: {:?}",
+        job.status
+    );
     println!("destino: {}", job.output.display());
-    assert!(job.output.ends_with("Elfen Lied/Season 01/Elfen Lied - S01E01.mp4"));
+    assert!(
+        job.output
+            .ends_with("Elfen Lied/Season 01/Elfen Lied - S01E01.mp4")
+    );
 
     dm.cancel(app.handle(), id);
     let job = wait_for(&dm, id, 20, |s| matches!(s, Status::Cancelled)).await;

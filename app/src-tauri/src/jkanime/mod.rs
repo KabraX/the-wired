@@ -58,26 +58,32 @@ impl JkClient {
 
     /// GET que devuelve el cuerpo como texto, con reintentos ante errores 5xx de red.
     pub async fn get_text(&self, url: &str, referer: Option<&str>) -> Result<String> {
-        self.send_text(|| {
-            let mut req = self.http.get(url);
-            if let Some(r) = referer {
-                req = req.header(reqwest::header::REFERER, r);
-            }
-            req
-        }, url)
+        self.send_text(
+            || {
+                let mut req = self.http.get(url);
+                if let Some(r) = referer {
+                    req = req.header(reqwest::header::REFERER, r);
+                }
+                req
+            },
+            url,
+        )
         .await
     }
 
     /// POST de formulario (API de episodios) con cabeceras de petición AJAX.
     pub async fn post_ajax(&self, url: &str, csrf: &str, referer: &str) -> Result<String> {
-        self.send_text(|| {
-            self.http
-                .post(url)
-                .header("X-Requested-With", "XMLHttpRequest")
-                .header("X-CSRF-TOKEN", csrf)
-                .header(reqwest::header::REFERER, referer)
-                .form(&[("_token", csrf)])
-        }, url)
+        self.send_text(
+            || {
+                self.http
+                    .post(url)
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .header("X-CSRF-TOKEN", csrf)
+                    .header(reqwest::header::REFERER, referer)
+                    .form(&[("_token", csrf)])
+            },
+            url,
+        )
         .await
     }
 
@@ -101,7 +107,12 @@ impl JkClient {
                     }
                     StatusCode::NOT_FOUND => return Err(JkError::NotFound(url.to_string())),
                     s if s.is_server_error() => last = format!("HTTP {} en {url}", s.as_u16()),
-                    s => return Err(JkError::Unavailable(format!("HTTP {} en {url}", s.as_u16()))),
+                    s => {
+                        return Err(JkError::Unavailable(format!(
+                            "HTTP {} en {url}",
+                            s.as_u16()
+                        )));
+                    }
                 },
                 Err(e) => last = e.to_string(),
             }
@@ -115,4 +126,3 @@ impl Default for JkClient {
         Self::new()
     }
 }
-

@@ -1,6 +1,6 @@
 [package]
 name = "the-wired"
-version = "0.1.0"
+version = "1.0.0"
 description = "the-wired: buscador y descargador de anime en español para bibliotecas de Jellyfin"
 authors = ["KabraX"]
 license = "MIT"
@@ -29,9 +29,12 @@ regex = "1.13.1"
 base64 = "0.23.1"
 thiserror = "2.0.21"
 url = "2.5.8"
-reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "cookies", "json", "form"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "cookies", "json", "form", "stream"] }
 tokio = { version = "1.54.1", features = ["time", "process", "io-util", "sync", "macros", "rt"] }
 tauri-plugin-dialog = "2.8.3"
+zip = { version = "9.1.1", default-features = false, features = ["deflate"] }
+futures-util = "0.3.34"
+tauri-plugin-process = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -45,3 +48,6 @@ strip = true
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

@@ -17,7 +17,7 @@ import {
 } from "@fluentui/react-components";
 import { ArrowSyncRegular, FolderRegular } from "@fluentui/react-icons";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type AppInfo, type Settings } from "../api";
+import { api, type Settings, type ToolSource, type ToolsStatus } from "../api";
 import { ACCENTS, type ThemeMode, type ThemePrefs } from "../theme";
 
 type UpdateResult = { ok: boolean; text: string };
@@ -40,14 +40,20 @@ const useStyles = makeStyles({
 // Azul de marca de Fluent, para la muestra del tema por defecto
 const FLUENT_BLUE = "#0f6cbd";
 
+const SOURCE: Record<ToolSource, string> = {
+  app: "copia de the-wired",
+  system: "del sistema",
+  missing: "no instalado",
+};
+
 type Props = {
-  info: AppInfo | null;
-  onInfoChanged: () => void;
+  tools: ToolsStatus | null;
+  onToolsChanged: () => void;
   themePrefs: ThemePrefs;
   onThemeChange: (p: ThemePrefs) => void;
 };
 
-export default function SettingsPage({ info, onInfoChanged, themePrefs, onThemeChange }: Props) {
+export default function SettingsPage({ tools, onToolsChanged, themePrefs, onThemeChange }: Props) {
   const styles = useStyles();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -101,10 +107,12 @@ export default function SettingsPage({ info, onInfoChanged, themePrefs, onThemeC
       )}
 
       <Subtitle2>Herramientas</Subtitle2>
-      <Field label="yt-dlp">
-        {info?.ytdlp ? (
-          <div className={styles.row} style={{ alignItems: "center" }}>
-            <Text>Versión {info.ytdlp}</Text>
+      <Field label="yt-dlp" hint="Descarga los vídeos. La copia de the-wired se actualiza desde aquí; la del sistema, con su gestor de paquetes.">
+        <div className={styles.row} style={{ alignItems: "center" }}>
+          <Text>
+            {tools?.ytdlp.version ? `Versión ${tools.ytdlp.version}` : "—"} · {tools ? SOURCE[tools.ytdlp.source] : "…"}
+          </Text>
+          {tools?.ytdlp.source !== "missing" && (
             <Button
               icon={updating ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
               disabled={updating}
@@ -113,7 +121,7 @@ export default function SettingsPage({ info, onInfoChanged, themePrefs, onThemeC
                 setUpdate(null);
                 try {
                   setUpdate({ ok: true, text: await api.updateYtdlp() });
-                  onInfoChanged();
+                  onToolsChanged();
                 } catch (e) {
                   setUpdate({ ok: false, text: String(e) });
                 } finally {
@@ -123,12 +131,13 @@ export default function SettingsPage({ info, onInfoChanged, themePrefs, onThemeC
             >
               Buscar actualizaciones
             </Button>
-          </div>
-        ) : (
-          <MessageBar intent="error">
-            <MessageBarBody>No se encontró yt-dlp: sin él no se puede descargar.</MessageBarBody>
-          </MessageBar>
-        )}
+          )}
+        </div>
+      </Field>
+      <Field label="ffmpeg" hint="Une los fragmentos del vídeo en un MP4 y comprueba los archivos ya descargados.">
+        <Text>
+          {tools?.ffmpeg.version ? `Versión ${tools.ffmpeg.version}` : "—"} · {tools ? SOURCE[tools.ffmpeg.source] : "…"}
+        </Text>
       </Field>
       {update && (
         <MessageBar intent={update.ok ? "success" : "warning"}>

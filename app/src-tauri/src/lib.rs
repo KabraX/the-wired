@@ -2,12 +2,13 @@ pub mod download;
 pub mod jkanime;
 pub mod library;
 pub mod settings;
+pub mod tools;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use download::{DownloadManager, EpisodeRequest, Job};
-use jkanime::{anime::AnimeInfo, episode::VideoSource, search::SearchResult, JkClient, JkError};
+use jkanime::{JkClient, JkError, anime::AnimeInfo, episode::VideoSource, search::SearchResult};
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use tauri::{AppHandle, Manager, State};
@@ -24,23 +25,35 @@ struct AppInfo {
     version: &'static str,
     os: &'static str,
     arch: &'static str,
-    ytdlp: Option<String>,
 }
 
 #[tauri::command]
-async fn app_info() -> AppInfo {
+fn app_info() -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
-        ytdlp: download::ytdlp_version().await,
     }
+}
+
+#[tauri::command]
+async fn tools_status() -> tools::ToolsStatus {
+    tools::status().await
+}
+
+#[tauri::command]
+async fn install_tools(app: AppHandle) -> Result<tools::ToolsStatus, String> {
+    tools::install_missing(&app).await
 }
 
 // ------------------------------------------------------------------ jkanime
 
 #[tauri::command]
-async fn search(client: State<'_, JkClient>, query: String, page: Option<u32>) -> Result<Vec<SearchResult>, JkError> {
+async fn search(
+    client: State<'_, JkClient>,
+    query: String,
+    page: Option<u32>,
+) -> Result<Vec<SearchResult>, JkError> {
     jkanime::search::search(&client, &query, page.unwrap_or(1)).await
 }
 
@@ -140,25 +153,34 @@ async fn episodes_on_disk(
 #[tauri::command]
 fn anime_folder(settings: State<'_, SettingsState>, anime: String) -> String {
     let library_dir = settings.settings.lock().unwrap().library_dir.clone();
-    library_dir.join(library::sanitize_filename(&anime)).display().to_string()
+    library_dir
+        .join(library::sanitize_filename(&anime))
+        .display()
+        .to_string()
 }
 
 #[tauri::command]
 async fn update_ytdlp() -> Result<String, String> {
-    download::update_ytdlp().await
+    tools::update_ytdlp().await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(JkClient::new())
         .setup(|app| {
+            tools::init(&app.path().app_data_dir()?);
             let path = app.path().app_config_dir()?.join("settings.json");
             let settings = Settings::load(&path).sanitized();
             app.manage(DownloadManager::new(settings.concurrent_downloads));
-            app.manage(SettingsState { settings: Mutex::new(settings), path });
+            app.manage(SettingsState {
+                settings: Mutex::new(settings),
+                path,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -175,6 +197,8 @@ pub fn run() {
             episodes_on_disk,
             anime_folder,
             update_ytdlp,
+            tools_status,
+            install_tools,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar the-wired");

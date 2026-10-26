@@ -17,7 +17,10 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { library_dir: library::default_library_dir(), concurrent_downloads: 2 }
+        Self {
+            library_dir: library::default_library_dir(),
+            concurrent_downloads: 2,
+        }
     }
 }
 
