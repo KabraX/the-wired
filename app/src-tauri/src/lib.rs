@@ -322,8 +322,19 @@ pub fn run() {
                 .then(|| tray::build(app.handle()).ok())
                 .flatten();
             app.manage(HasTray(tray.is_some()));
-            if let Some(tray) = tray {
-                manager = manager.with_hook(move |jobs| tray::update(&tray, jobs));
+            if tray.is_some() {
+                // El icono solo se toca desde el hilo principal: TrayIcon usa Rc por dentro
+                // y clonarlo desde los hilos de las descargas corrompía su contador (abort).
+                let handle = app.handle().clone();
+                manager = manager.with_hook(move |jobs| {
+                    let jobs = jobs.to_vec();
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Some(tray) = h.tray_by_id(tray::ID) {
+                            tray::update(&tray, &jobs);
+                        }
+                    });
+                });
             }
             app.manage(manager.clone());
             app.manage(SettingsState {

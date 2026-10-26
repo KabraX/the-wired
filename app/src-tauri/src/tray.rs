@@ -38,6 +38,9 @@ pub fn available() -> bool {
         .any(|d| names.iter().any(|n| d.join(n).exists()))
 }
 
+/// Id del icono, para recuperarlo con `AppHandle::tray_by_id`.
+pub const ID: &str = "main";
+
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     let show = MenuItem::with_id(app, "show", "Mostrar the-wired", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause_all", "Pausar descargas", true, None::<&str>)?;
@@ -45,7 +48,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &pause, &resume, &quit])?;
 
-    let mut builder = TrayIconBuilder::with_id("main")
+    let mut builder = TrayIconBuilder::with_id(ID)
         .tooltip("the-wired")
         .menu(&menu)
         .show_menu_on_left_click(false)
