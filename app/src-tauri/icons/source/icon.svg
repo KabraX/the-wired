@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- colores de la propuesta 1 -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a0710"/>
+      <stop offset="0.55" stop-color="#8e1622"/>
+      <stop offset="0.85" stop-color="#e2533f"/>
+      <stop offset="1" stop-color="#f3a35c"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="r"><rect width="1024" height="1024" rx="200"/></clipPath>
+  </defs>
+  <g clip-path="url(#r)">
+    <rect width="1024" height="1024" fill="url(#sky)"/>
+    <circle cx="250" cy="880" r="170" fill="#f7c27a" opacity="0.32"/>
+
+    <!-- postes laterales, más lejanos -->
+    <g fill="#1d0509" opacity="0.8">
+      <polygon points="96,1024 140,1024 132,190 104,190"/>
+      <rect x="66" y="268" width="104" height="18" rx="4"/>
+      <polygon points="884,1024 928,1024 920,190 892,190"/>
+      <rect x="854" y="268" width="104" height="18" rx="4"/>
+    </g>
+
+    <!-- cables secundarios -->
+    <g fill="none" stroke="#120306" stroke-width="12" stroke-linecap="round">
+      <path d="M-30 180 Q 520 300 1054 170"/>
+      <path d="M-30 470 Q 300 560 512 470 Q 720 380 1054 520"/>
+    </g>
+
+    <!-- poste principal en contrapicado -->
+    <path d="M572 520 L 980 -30" stroke="#120306" stroke-width="36" stroke-linecap="round"/>
+    <polygon points="440,1054 590,1054 566,-30 464,-30" fill="#120306"/>
+    <rect x="366" y="300" width="296" height="32" rx="8" fill="#120306"/>
+    <rect x="388" y="256" width="20" height="48" rx="6" fill="#120306"/>
+    <rect x="620" y="256" width="20" height="48" rx="6" fill="#120306"/>
+    <rect x="502" y="252" width="22" height="50" rx="6" fill="#120306"/>
+    <g transform="rotate(-14 360 600)"><rect x="300" y="565" width="150" height="74" rx="12" fill="#120306"/></g>
+
+    <!-- la señal: el cable rojo cuelga entre los tres postes y dibuja la W -->
+    <path id="w" d="M118 262 C 160 560 230 720 312 720 C 400 720 470 520 513 262 C 556 520 626 720 714 720 C 796 720 866 560 906 262"
+          fill="none" stroke="#ff4357" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+    <path d="M118 262 C 160 560 230 720 312 720 C 400 720 470 520 513 262 C 556 520 626 720 714 720 C 796 720 866 560 906 262"
+          fill="none" stroke="#ffd3d8" stroke-width="8" stroke-linecap="round" opacity="0.9"/>
+
+    <!-- ciudad (de la propuesta 1) -->
+    <path fill="#0b0204" d="M0 900 H90 V850 H170 V880 H240 V820 H330 V870 H420 V910 H520 V860 H640 V830 H730 V885 H820 V845 H930 V880 H1024 V1024 H0 Z"/>
+  </g>
+</svg>
