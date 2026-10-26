@@ -9,8 +9,6 @@ import {
   Title2,
   makeStyles,
   tokens,
-  webDarkTheme,
-  webLightTheme,
 } from "@fluentui/react-components";
 import { ArrowDownloadRegular, SearchRegular, SettingsRegular } from "@fluentui/react-icons";
 import { api, isFinished, type AppInfo, type Job, type SearchResult } from "./api";
@@ -18,6 +16,7 @@ import SearchPage from "./pages/SearchPage";
 import AnimePage from "./pages/AnimePage";
 import DownloadsPage from "./pages/DownloadsPage";
 import SettingsPage from "./pages/SettingsPage";
+import { buildTheme, loadPrefs, savePrefs, type ThemePrefs } from "./theme";
 
 type Page = "buscar" | "descargas" | "ajustes";
 
@@ -48,8 +47,8 @@ const useStyles = makeStyles({
   footer: { marginTop: "auto", color: tokens.colorNeutralForeground3 },
 });
 
-// Sigue el tema claro/oscuro del sistema
-function useSystemTheme() {
+// ¿El sistema está en modo oscuro? (se actualiza si cambia)
+function useSystemDark() {
   const query = useMemo(() => window.matchMedia("(prefers-color-scheme: dark)"), []);
   const [dark, setDark] = useState(query.matches);
   useEffect(() => {
@@ -57,13 +56,20 @@ function useSystemTheme() {
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, [query]);
-  return dark ? webDarkTheme : webLightTheme;
+  return dark;
 }
 
 const titles: Record<Page, string> = { buscar: "Buscar anime", descargas: "Descargas", ajustes: "Ajustes" };
 
 export default function App() {
-  const theme = useSystemTheme();
+  const systemDark = useSystemDark();
+  const [prefs, setPrefs] = useState<ThemePrefs>(loadPrefs);
+  const dark = prefs.mode === "system" ? systemDark : prefs.mode === "dark";
+  const theme = useMemo(() => buildTheme(prefs.accent, dark), [prefs.accent, dark]);
+  const changePrefs = (p: ThemePrefs) => {
+    setPrefs(p);
+    savePrefs(p);
+  };
   const styles = useStyles();
   const [page, setPage] = useState<Page>("buscar");
   const [opened, setOpened] = useState<SearchResult | null>(null);
@@ -117,7 +123,12 @@ export default function App() {
             <AnimePage result={opened} jobs={jobs} onBack={() => setOpened(null)} onQueued={() => setPage("descargas")} />
           )}
           {page === "descargas" && <DownloadsPage jobs={jobs} onChanged={reloadJobs} />}
-          {page === "ajustes" && <SettingsPage info={info} />}
+          {page === "ajustes" && <SettingsPage
+              info={info}
+              onInfoChanged={() => api.appInfo().then(setInfo)}
+              themePrefs={prefs}
+              onThemeChange={changePrefs}
+            />}
         </main>
       </div>
     </FluentProvider>

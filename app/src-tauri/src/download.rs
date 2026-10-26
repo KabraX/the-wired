@@ -400,3 +400,28 @@ mod tests {
         assert!(parse_progress("").is_none());
     }
 }
+
+/// Ejecuta `yt-dlp -U` y devuelve su última línea útil ("is up to date", "Updated…" o el error).
+pub async fn update_ytdlp() -> Result<String, String> {
+    let out = Command::new(ytdlp_path())
+        .arg("-U")
+        .output()
+        .await
+        .map_err(|e| format!("no se pudo ejecutar yt-dlp: {e}"))?;
+    let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let last = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .last()
+        .unwrap_or("")
+        .to_string();
+    if out.status.success() {
+        Ok(last)
+    } else if last.contains("Permission denied") || last.contains("package manager") || last.contains("pip") {
+        // El yt-dlp del sistema (pacman, apt…) no puede actualizarse a sí mismo
+        Err("Este yt-dlp lo instaló el sistema: actualízalo con tu gestor de paquetes (en CachyOS: paru).".into())
+    } else {
+        Err(last)
+    }
+}

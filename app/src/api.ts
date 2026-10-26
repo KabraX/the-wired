@@ -81,6 +81,7 @@ export const api = {
   episodesOnDisk: (anime: string, season: number, episodes: number[]) =>
     invoke<number[]>("episodes_on_disk", { anime, season, episodes }),
   animeFolder: (anime: string) => invoke<string>("anime_folder", { anime }),
+  updateYtdlp: () => invoke<string>("update_ytdlp"),
 };
 
 export function formatSpeed(bps: number | null): string {

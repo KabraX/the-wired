@@ -143,6 +143,11 @@ fn anime_folder(settings: State<'_, SettingsState>, anime: String) -> String {
     library_dir.join(library::sanitize_filename(&anime)).display().to_string()
 }
 
+#[tauri::command]
+async fn update_ytdlp() -> Result<String, String> {
+    download::update_ytdlp().await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -169,6 +174,7 @@ pub fn run() {
             clear_finished_downloads,
             episodes_on_disk,
             anime_folder,
+            update_ytdlp,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar the-wired");
