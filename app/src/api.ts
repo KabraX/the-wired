@@ -37,6 +37,8 @@ export type JobStatus =
   | { state: "queued" }
   | { state: "resolving" }
   | { state: "downloading"; percent: number | null; speed: number | null; eta: number | null }
+  | { state: "paused" }
+  | { state: "waiting"; attempt: number; retry_at: number; message: string }
   | { state: "done" }
   | { state: "skipped" }
   | { state: "failed"; message: string }
@@ -51,6 +53,7 @@ export type Job = {
   episode: number;
   output: string;
   status: JobStatus;
+  attempts: number;
 };
 
 // Error del scraper tal como lo serializa Rust (JkError)
@@ -86,6 +89,10 @@ export const api = {
   }) => invoke<number[]>("enqueue_downloads", { args }),
   listDownloads: () => invoke<Job[]>("list_downloads"),
   cancelDownload: (id: number) => invoke<void>("cancel_download", { id }),
+  pauseDownload: (id: number) => invoke<void>("pause_download", { id }),
+  resumeDownload: (id: number) => invoke<void>("resume_download", { id }),
+  pauseAll: () => invoke<void>("pause_all_downloads"),
+  resumeAll: () => invoke<void>("resume_all_downloads"),
   clearFinished: () => invoke<void>("clear_finished_downloads"),
   episodesOnDisk: (anime: string, season: number, episodes: number[]) =>
     invoke<number[]>("episodes_on_disk", { anime, season, episodes }),

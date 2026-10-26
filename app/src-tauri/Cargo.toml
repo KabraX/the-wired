@@ -1,6 +1,6 @@
 [package]
 name = "the-wired"
-version = "1.0.0"
+version = "1.1.0"
 description = "the-wired: buscador y descargador de anime en español para bibliotecas de Jellyfin"
 authors = ["KabraX"]
 license = "MIT"
@@ -20,7 +20,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,6 +35,7 @@ tauri-plugin-dialog = "2.8.3"
 zip = { version = "9.1.1", default-features = false, features = ["deflate"] }
 futures-util = "0.3.34"
 tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

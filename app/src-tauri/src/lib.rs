@@ -3,6 +3,7 @@ pub mod jkanime;
 pub mod library;
 pub mod settings;
 pub mod tools;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -12,6 +13,9 @@ use jkanime::{JkClient, JkError, anime::AnimeInfo, episode::VideoSource, search:
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use tauri::{AppHandle, Manager, State};
+
+/// Si hay icono en la bandeja (si no, cerrar la ventana cierra la app).
+struct HasTray(bool);
 
 /// Ajustes en memoria más la ruta del archivo donde se guardan.
 struct SettingsState {
@@ -102,7 +106,6 @@ struct DownloadArgs {
 #[tauri::command]
 fn enqueue_downloads(
     app: AppHandle,
-    client: State<'_, JkClient>,
     downloads: State<'_, DownloadManager>,
     settings: State<'_, SettingsState>,
     args: DownloadArgs,
@@ -120,7 +123,7 @@ fn enqueue_downloads(
             episode,
         })
         .collect();
-    downloads.enqueue(&app, client.inner().clone(), &library_dir, requests)
+    downloads.enqueue(&app, &library_dir, requests)
 }
 
 #[tauri::command]
@@ -131,6 +134,27 @@ fn list_downloads(downloads: State<'_, DownloadManager>) -> Vec<Job> {
 #[tauri::command]
 fn cancel_download(app: AppHandle, downloads: State<'_, DownloadManager>, id: u64) {
     downloads.cancel(&app, id);
+}
+
+#[tauri::command]
+fn pause_download(app: AppHandle, downloads: State<'_, DownloadManager>, id: u64) {
+    downloads.pause(&app, id);
+}
+
+/// Reanuda una pausada o reintenta una fallida/cancelada.
+#[tauri::command]
+fn resume_download(app: AppHandle, downloads: State<'_, DownloadManager>, id: u64) {
+    downloads.resume(&app, id);
+}
+
+#[tauri::command]
+fn pause_all_downloads(app: AppHandle, downloads: State<'_, DownloadManager>) {
+    downloads.pause_all(&app);
+}
+
+#[tauri::command]
+fn resume_all_downloads(app: AppHandle, downloads: State<'_, DownloadManager>) {
+    downloads.resume_all(&app);
 }
 
 #[tauri::command]
@@ -167,6 +191,7 @@ async fn update_ytdlp() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -176,12 +201,37 @@ pub fn run() {
             tools::init(&app.path().app_data_dir()?);
             let path = app.path().app_config_dir()?.join("settings.json");
             let settings = Settings::load(&path).sanitized();
-            app.manage(DownloadManager::new(settings.concurrent_downloads));
+            let queue_file = app.path().app_data_dir()?.join("downloads.json");
+            let client = app.state::<JkClient>().inner().clone();
+            let mut manager =
+                DownloadManager::new(settings.concurrent_downloads, client, Some(queue_file));
+            // Bandeja opcional: sin ella la app funciona igual (cerrar = salir)
+            let tray = tray::available()
+                .then(|| tray::build(app.handle()).ok())
+                .flatten();
+            app.manage(HasTray(tray.is_some()));
+            if let Some(tray) = tray {
+                manager = manager.with_hook(move |jobs| tray::update(&tray, jobs));
+            }
+            app.manage(manager.clone());
             app.manage(SettingsState {
                 settings: Mutex::new(settings),
                 path,
             });
+            // Retoma la cola guardada (lo que quedó a medias al cerrar)
+            manager.restore(app.handle());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Con descargas en marcha, cerrar la ventana la esconde en la bandeja
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if app.state::<HasTray>().0 && app.state::<DownloadManager>().has_active() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    tray::notify_background(app);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -194,6 +244,10 @@ pub fn run() {
             list_downloads,
             cancel_download,
             clear_finished_downloads,
+            pause_download,
+            resume_download,
+            pause_all_downloads,
+            resume_all_downloads,
             episodes_on_disk,
             anime_folder,
             update_ytdlp,

@@ -1,25 +1,33 @@
 //! Cola de descargas con yt-dlp. Equivale a `download_episode` / `download_season` del
 //! script: obtiene una URL fresca de cada episodio justo antes de descargarlo (los
 //! `.m3u8` caducan), salta los que ya están completos y remuxea a MP4 sin recodificar.
+//!
+//! Además (v1.1): la cola se guarda en disco y se retoma al abrir la app, cada descarga
+//! se puede pausar y reanudar (yt-dlp continúa los fragmentos ya bajados), los fallos
+//! temporales se reintentan solos y al vaciarse la cola se avisa con una notificación.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Runtime};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{Semaphore, watch};
 
-use crate::jkanime::{JkClient, episode};
+use crate::jkanime::{JkClient, JkError, episode};
 use crate::library;
 use crate::tools;
 
 /// Evento que recibe la interfaz cada vez que cambia un trabajo.
 pub const EVENT: &str = "download-updated";
 
-#[derive(Debug, Clone, Serialize)]
+/// Esperas entre reintentos automáticos de un fallo temporal (1, 5 y 15 minutos).
+pub const RETRY_DELAYS: [u64; 3] = [60, 300, 900];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum Status {
     Queued,
@@ -33,6 +41,14 @@ pub enum Status {
         /// Segundos restantes.
         eta: Option<u64>,
     },
+    /// Pausado por el usuario; los fragmentos descargados se conservan.
+    Paused,
+    /// Falló por un problema temporal y se reintentará solo en `retry_at` (segundos Unix).
+    Waiting {
+        attempt: u32,
+        retry_at: u64,
+        message: String,
+    },
     Done,
     /// Ya existía completo en la biblioteca.
     Skipped,
@@ -43,15 +59,24 @@ pub enum Status {
 }
 
 impl Status {
-    fn is_finished(&self) -> bool {
+    pub fn is_finished(&self) -> bool {
         matches!(
             self,
             Status::Done | Status::Skipped | Status::Failed { .. } | Status::Cancelled
         )
     }
+
+    /// Hay un proceso o una espera en marcha para este trabajo.
+    pub fn is_active(&self) -> bool {
+        !self.is_finished() && !matches!(self, Status::Paused)
+    }
+
+    fn kind(&self) -> std::mem::Discriminant<Status> {
+        std::mem::discriminant(self)
+    }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: u64,
     pub anime: String,
@@ -61,6 +86,9 @@ pub struct Job {
     pub episode: u32,
     pub output: PathBuf,
     pub status: Status,
+    /// Reintentos automáticos ya hechos.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -72,53 +100,138 @@ pub struct EpisodeRequest {
     pub episode: u32,
 }
 
+/// Orden que recibe el trabajador de cada descarga.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Signal {
+    Run,
+    Pause,
+    Cancel,
+}
+
+/// Cómo terminó un intento de descarga.
+enum Outcome {
+    Finished(Status),
+    Paused,
+    Cancelled,
+    /// `transient`: tiene sentido reintentar más tarde (red, jkanime caído…).
+    Failed {
+        message: String,
+        transient: bool,
+    },
+}
+
+#[derive(Default)]
+struct Batch {
+    done: u32,
+    skipped: u32,
+    failed: u32,
+}
+
 struct Inner {
     jobs: Vec<Job>,
-    cancels: HashMap<u64, watch::Sender<bool>>,
+    signals: HashMap<u64, watch::Sender<Signal>>,
     next_id: u64,
+    batch: Batch,
 }
+
+type ChangeHook = Arc<dyn Fn(&[Job]) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct DownloadManager {
     inner: Arc<Mutex<Inner>>,
     permits: Arc<Semaphore>,
+    client: JkClient,
+    /// Archivo donde se guarda la cola (None en tests).
+    state_file: Option<PathBuf>,
+    on_change: Option<ChangeHook>,
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl DownloadManager {
-    pub fn new(concurrent: u32) -> Self {
+    pub fn new(concurrent: u32, client: JkClient, state_file: Option<PathBuf>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 jobs: Vec::new(),
-                cancels: HashMap::new(),
+                signals: HashMap::new(),
                 next_id: 1,
+                batch: Batch::default(),
             })),
             permits: Arc::new(Semaphore::new(concurrent.max(1) as usize)),
+            client,
+            state_file,
+            on_change: None,
         }
+    }
+
+    /// Función a la que se llama tras cada cambio (para el icono de la bandeja).
+    pub fn with_hook(mut self, hook: impl Fn(&[Job]) + Send + Sync + 'static) -> Self {
+        self.on_change = Some(Arc::new(hook));
+        self
     }
 
     pub fn jobs(&self) -> Vec<Job> {
         self.inner.lock().unwrap().jobs.clone()
     }
 
-    /// Encola episodios. Los que ya están en cola o descargándose se ignoran.
+    pub fn has_active(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .jobs
+            .iter()
+            .any(|j| j.status.is_active())
+    }
+
+    /// Carga la cola guardada y retoma lo que estaba pendiente. Lo pausado sigue pausado.
+    pub fn restore<R: Runtime>(&self, app: &AppHandle<R>) {
+        let Some(path) = &self.state_file else { return };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(mut jobs) = serde_json::from_str::<Vec<Job>>(&text) else {
+            return;
+        };
+        let mut resume = Vec::new();
+        for job in &mut jobs {
+            if job.status.is_active() {
+                job.status = Status::Queued;
+                resume.push(job.id);
+            }
+        }
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.next_id = jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+            inner.jobs = jobs;
+        }
+        for id in resume {
+            self.start(app, id);
+        }
+        self.changed();
+    }
+
+    /// Encola episodios. Los que ya están en cola, en curso o en pausa se ignoran.
     pub fn enqueue<R: Runtime>(
         &self,
         app: &AppHandle<R>,
-        client: JkClient,
         library_dir: &Path,
         requests: Vec<EpisodeRequest>,
     ) -> Vec<u64> {
         let mut ids = Vec::new();
         for req in requests {
             let output = library::episode_path(library_dir, &req.anime, req.season, req.episode);
-            let (tx, rx) = watch::channel(false);
             let job = {
                 let mut inner = self.inner.lock().unwrap();
-                let busy = inner
+                if inner
                     .jobs
                     .iter()
-                    .any(|j| j.output == output && !j.status.is_finished());
-                if busy {
+                    .any(|j| j.output == output && !j.status.is_finished())
+                {
                     continue;
                 }
                 let id = inner.next_id;
@@ -132,98 +245,289 @@ impl DownloadManager {
                     episode: req.episode,
                     output,
                     status: Status::Queued,
+                    attempts: 0,
                 };
                 inner.jobs.push(job.clone());
-                inner.cancels.insert(id, tx);
                 job
             };
             ids.push(job.id);
             let _ = app.emit(EVENT, &job);
-
-            let this = self.clone();
-            let app = app.clone();
-            let client = client.clone();
-            tauri::async_runtime::spawn(async move {
-                let _permit = this.permits.clone().acquire_owned().await;
-                if *rx.borrow() {
-                    return; // cancelado mientras esperaba turno
-                }
-                let status = this.run(&app, &client, &job, rx).await;
-                this.set_status(&app, job.id, status);
-            });
+            self.start(app, job.id);
         }
+        self.changed();
         ids
     }
 
-    pub fn cancel<R: Runtime>(&self, app: &AppHandle<R>, id: u64) {
-        let tx = self.inner.lock().unwrap().cancels.get(&id).cloned();
-        if let Some(tx) = tx {
-            let _ = tx.send(true);
+    /// Lanza el trabajador de una descarga (que espera su turno en la cola).
+    fn start<R: Runtime>(&self, app: &AppHandle<R>, id: u64) {
+        let (tx, rx) = watch::channel(Signal::Run);
+        self.inner.lock().unwrap().signals.insert(id, tx);
+        let this = self.clone();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { this.worker(&app, id, rx).await });
+    }
+
+    async fn worker<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        id: u64,
+        mut signal: watch::Receiver<Signal>,
+    ) {
+        loop {
+            // Esperar turno; se puede pausar o cancelar mientras tanto
+            let permit = tokio::select! {
+                p = self.permits.clone().acquire_owned() => p.ok(),
+                _ = signal.changed() => None,
+            };
+            if let Some(stop) = stop_status(*signal.borrow()) {
+                self.set_status(app, id, stop);
+                return;
+            }
+            let Some(_permit) = permit else { return };
+            let Some(job) = self.get(id) else { return };
+
+            match self.attempt(app, &job, &mut signal).await {
+                Outcome::Finished(status) => {
+                    let skipped = matches!(status, Status::Skipped);
+                    self.set_status(app, id, status);
+                    self.finished(app, if skipped { Final::Skipped } else { Final::Done });
+                    return;
+                }
+                Outcome::Paused => return self.set_status(app, id, Status::Paused),
+                Outcome::Cancelled => return self.set_status(app, id, Status::Cancelled),
+                Outcome::Failed { message, transient } => {
+                    let attempts = self.bump_attempts(id);
+                    let delay = RETRY_DELAYS.get(attempts as usize - 1).copied();
+                    let Some(delay) = delay.filter(|_| transient) else {
+                        self.set_status(app, id, Status::Failed { message });
+                        self.finished(app, Final::Failed);
+                        return;
+                    };
+                    drop(_permit);
+                    let retry_at = now_secs() + delay;
+                    self.set_status(
+                        app,
+                        id,
+                        Status::Waiting {
+                            attempt: attempts,
+                            retry_at,
+                            message,
+                        },
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                        _ = signal.changed() => {}
+                    }
+                    if let Some(stop) = stop_status(*signal.borrow()) {
+                        self.set_status(app, id, stop);
+                        return;
+                    }
+                    self.set_status(app, id, Status::Queued);
+                }
+            }
         }
-        let queued = self
-            .inner
+    }
+
+    fn get(&self, id: u64) -> Option<Job> {
+        self.inner
             .lock()
             .unwrap()
             .jobs
             .iter()
-            .any(|j| j.id == id && matches!(j.status, Status::Queued));
-        if queued {
+            .find(|j| j.id == id)
+            .cloned()
+    }
+
+    fn bump_attempts(&self, id: u64) -> u32 {
+        let mut inner = self.inner.lock().unwrap();
+        inner
+            .jobs
+            .iter_mut()
+            .find(|j| j.id == id)
+            .map(|j| {
+                j.attempts += 1;
+                j.attempts
+            })
+            .unwrap_or(1)
+    }
+
+    fn send(&self, id: u64, signal: Signal) -> bool {
+        let tx = self.inner.lock().unwrap().signals.get(&id).cloned();
+        tx.map(|tx| tx.send(signal).is_ok()).unwrap_or(false)
+    }
+
+    pub fn pause<R: Runtime>(&self, app: &AppHandle<R>, id: u64) {
+        if self.get(id).is_some_and(|j| j.status.is_active()) && !self.send(id, Signal::Pause) {
+            self.set_status(app, id, Status::Paused);
+        }
+    }
+
+    /// Reanuda una pausada o vuelve a intentar una fallida/cancelada.
+    pub fn resume<R: Runtime>(&self, app: &AppHandle<R>, id: u64) {
+        let Some(job) = self.get(id) else { return };
+        if job.status.is_active() || matches!(job.status, Status::Done | Status::Skipped) {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
+                j.attempts = 0;
+                j.status = Status::Queued;
+                let _ = app.emit(EVENT, &*j);
+            }
+        }
+        self.start(app, id);
+        self.changed();
+    }
+
+    pub fn cancel<R: Runtime>(&self, app: &AppHandle<R>, id: u64) {
+        let Some(job) = self.get(id) else { return };
+        if job.status.is_finished() {
+            return;
+        }
+        // Una descarga pausada no tiene trabajador: se marca directamente
+        if matches!(job.status, Status::Paused) || !self.send(id, Signal::Cancel) {
             self.set_status(app, id, Status::Cancelled);
+        }
+    }
+
+    pub fn pause_all<R: Runtime>(&self, app: &AppHandle<R>) {
+        for j in self.jobs().into_iter().filter(|j| j.status.is_active()) {
+            self.pause(app, j.id);
+        }
+    }
+
+    pub fn resume_all<R: Runtime>(&self, app: &AppHandle<R>) {
+        for j in self
+            .jobs()
+            .into_iter()
+            .filter(|j| matches!(j.status, Status::Paused))
+        {
+            self.resume(app, j.id);
         }
     }
 
     /// Quita de la lista los trabajos terminados.
     pub fn clear_finished(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let finished: Vec<u64> = inner
-            .jobs
-            .iter()
-            .filter(|j| j.status.is_finished())
-            .map(|j| j.id)
-            .collect();
-        inner.jobs.retain(|j| !j.status.is_finished());
-        for id in finished {
-            inner.cancels.remove(&id);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let finished: Vec<u64> = inner
+                .jobs
+                .iter()
+                .filter(|j| j.status.is_finished())
+                .map(|j| j.id)
+                .collect();
+            inner.jobs.retain(|j| !j.status.is_finished());
+            for id in finished {
+                inner.signals.remove(&id);
+            }
         }
+        self.changed();
     }
 
     fn set_status<R: Runtime>(&self, app: &AppHandle<R>, id: u64, status: Status) {
-        let job = {
+        let (job, kind_changed) = {
             let mut inner = self.inner.lock().unwrap();
             let Some(job) = inner.jobs.iter_mut().find(|j| j.id == id) else {
                 return;
             };
-            // Un trabajo cancelado no vuelve a otro estado
+            // Un trabajo cancelado solo sale de ahí con `resume`
             if matches!(job.status, Status::Cancelled) {
                 return;
             }
+            let kind_changed = job.status.kind() != status.kind();
             job.status = status;
-            job.clone()
+            (job.clone(), kind_changed)
         };
         let _ = app.emit(EVENT, &job);
+        // El progreso cambia muchas veces por segundo: solo se guarda al cambiar de estado
+        if kind_changed {
+            self.changed();
+        } else if let Some(hook) = &self.on_change {
+            hook(&self.jobs());
+        }
     }
 
-    async fn run<R: Runtime>(
+    /// Guarda la cola y avisa al icono de la bandeja.
+    fn changed(&self) {
+        let jobs = self.jobs();
+        if let Some(path) = &self.state_file {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(text) = serde_json::to_string_pretty(&jobs) {
+                let tmp = path.with_extension("tmp");
+                if std::fs::write(&tmp, text).is_ok() {
+                    let _ = std::fs::rename(&tmp, path);
+                }
+            }
+        }
+        if let Some(hook) = &self.on_change {
+            hook(&jobs);
+        }
+    }
+
+    /// Cuenta el resultado y, si ya no queda nada en marcha, notifica el resumen.
+    fn finished<R: Runtime>(&self, app: &AppHandle<R>, result: Final) {
+        let summary = {
+            let mut inner = self.inner.lock().unwrap();
+            match result {
+                Final::Done => inner.batch.done += 1,
+                Final::Skipped => inner.batch.skipped += 1,
+                Final::Failed => inner.batch.failed += 1,
+            }
+            if inner.jobs.iter().any(|j| j.status.is_active()) {
+                None
+            } else {
+                Some(std::mem::take(&mut inner.batch))
+            }
+        };
+        if let Some(b) = summary {
+            let mut parts = Vec::new();
+            if b.done > 0 {
+                parts.push(format!("{} descargado{}", b.done, plural(b.done)));
+            }
+            if b.skipped > 0 {
+                parts.push(format!(
+                    "{} ya estaba{} en la biblioteca",
+                    b.skipped,
+                    plural(b.skipped)
+                ));
+            }
+            if b.failed > 0 {
+                parts.push(format!("{} fallido{}", b.failed, plural(b.failed)));
+            }
+            notify(
+                app,
+                "Descargas terminadas",
+                &format!("{}.", parts.join(", ")),
+            );
+        }
+    }
+
+    /// Un intento completo: comprobar disco, buscar la URL y ejecutar yt-dlp.
+    async fn attempt<R: Runtime>(
         &self,
         app: &AppHandle<R>,
-        client: &JkClient,
         job: &Job,
-        mut cancel: watch::Receiver<bool>,
-    ) -> Status {
+        signal: &mut watch::Receiver<Signal>,
+    ) -> Outcome {
         if is_complete(&job.output).await {
-            return Status::Skipped;
+            return Outcome::Finished(Status::Skipped);
         }
 
         self.set_status(app, job.id, Status::Resolving);
         let source = tokio::select! {
-            r = episode::fetch_video_source(client, &job.anime_url, job.episode, job.is_movie) => r,
-            _ = cancel.changed() => return Status::Cancelled,
+            r = episode::fetch_video_source(&self.client, &job.anime_url, job.episode, job.is_movie) => r,
+            _ = signal.changed() => return stop_outcome(*signal.borrow()),
         };
         let source = match source {
             Ok(s) => s,
             Err(e) => {
-                return Status::Failed {
+                let transient = matches!(e, JkError::Unavailable(_));
+                return Outcome::Failed {
                     message: e.to_string(),
+                    transient,
                 };
             }
         };
@@ -231,8 +535,9 @@ impl DownloadManager {
         if let Some(dir) = job.output.parent()
             && let Err(e) = tokio::fs::create_dir_all(dir).await
         {
-            return Status::Failed {
+            return Outcome::Failed {
                 message: format!("no se pudo crear {}: {e}", dir.display()),
+                transient: false,
             };
         }
 
@@ -261,8 +566,9 @@ impl DownloadManager {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                return Status::Failed {
+                return Outcome::Failed {
                     message: format!("no se pudo ejecutar yt-dlp ({e}). ¿Está instalado?"),
+                    transient: false,
                 };
             }
         };
@@ -291,9 +597,10 @@ impl DownloadManager {
                     }
                     _ => break,
                 },
-                _ = cancel.changed() => {
+                _ = signal.changed() => {
+                    // Pausar o cancelar: se corta yt-dlp; los fragmentos quedan para continuar
                     let _ = child.kill().await;
-                    return Status::Cancelled;
+                    return stop_outcome(*signal.borrow());
                 }
             }
         }
@@ -301,14 +608,56 @@ impl DownloadManager {
         let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
         let err = errors.await.unwrap_or_default();
         if ok && tokio::fs::try_exists(&job.output).await.unwrap_or(false) {
-            Status::Done
-        } else if !err.is_empty() {
-            Status::Failed { message: err }
+            Outcome::Finished(Status::Done)
         } else {
-            Status::Failed {
-                message: "yt-dlp terminó sin generar el archivo".into(),
-            }
+            let message = if err.is_empty() {
+                "yt-dlp terminó sin generar el archivo".to_string()
+            } else {
+                err
+            };
+            // Casi todos los fallos de yt-dlp son de red o de un enlace caducado: reintentar
+            // con una URL nueva tiene sentido. Lo que no, es un enlace que no sabe leer.
+            let transient = !message.contains("Unsupported URL");
+            Outcome::Failed { message, transient }
         }
+    }
+}
+
+/// Resultado final de un episodio, para el resumen de la notificación.
+enum Final {
+    Done,
+    Skipped,
+    Failed,
+}
+
+fn plural(n: u32) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Estado final si el trabajador recibió una orden de parar.
+fn stop_status(signal: Signal) -> Option<Status> {
+    match signal {
+        Signal::Run => None,
+        Signal::Pause => Some(Status::Paused),
+        Signal::Cancel => Some(Status::Cancelled),
+    }
+}
+
+fn stop_outcome(signal: Signal) -> Outcome {
+    match signal {
+        Signal::Cancel => Outcome::Cancelled,
+        _ => Outcome::Paused,
+    }
+}
+
+/// Notificación de escritorio (si el plugin está cargado; en tests no lo está).
+pub fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if app
+        .try_state::<tauri_plugin_notification::Notification<R>>()
+        .is_some()
+    {
+        let _ = app.notification().builder().title(title).body(body).show();
     }
 }
 

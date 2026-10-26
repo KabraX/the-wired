@@ -101,7 +101,7 @@ export default function App() {
     };
   }, [reloadJobs, reloadTools]);
 
-  const active = jobs.filter((j) => !isFinished(j)).length;
+  const active = jobs.filter((j) => !isFinished(j) && j.status.state !== "paused").length;
   // La búsqueda se conserva al entrar en un anime y volver
   const searchPage = <SearchPage onOpen={setOpened} />;
 
