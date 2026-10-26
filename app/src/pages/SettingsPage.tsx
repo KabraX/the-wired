@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Field,
@@ -18,7 +18,7 @@ import {
 import { ArrowSyncRegular, DocumentRegular, FolderRegular } from "@fluentui/react-icons";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type Settings, type ToolSource, type ToolsStatus } from "../api";
+import { api, SITES, type Settings, type Site, type SourceSettings, type ToolSource, type ToolsStatus } from "../api";
 import Loading from "../Loading";
 import CopyLogButton from "../CopyLogButton";
 import { ACCENTS, type ThemeMode, type ThemePrefs } from "../theme";
@@ -28,6 +28,13 @@ type UpdateResult = { ok: boolean; text: string };
 const useStyles = makeStyles({
   form: { display: "flex", flexDirection: "column", gap: tokens.spacingVerticalL, maxWidth: "640px" },
   row: { display: "flex", gap: tokens.spacingHorizontalS },
+  source: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalM,
+    paddingLeft: tokens.spacingHorizontalM,
+    borderLeft: `2px solid ${tokens.colorNeutralStroke2}`,
+  },
   swatches: { display: "flex", flexWrap: "wrap", gap: tokens.spacingHorizontalS },
   swatch: {
     width: "36px",
@@ -50,62 +57,82 @@ const SOURCE: Record<ToolSource, string> = {
 };
 
 type Props = {
+  settings: Settings | null;
+  onSettingsChange: (s: Settings) => Promise<Settings>;
   tools: ToolsStatus | null;
   onToolsChanged: () => void;
   themePrefs: ThemePrefs;
   onThemeChange: (p: ThemePrefs) => void;
 };
 
-export default function SettingsPage({ tools, onToolsChanged, themePrefs, onThemeChange }: Props) {
+export default function SettingsPage({ settings, onSettingsChange, tools, onToolsChanged, themePrefs, onThemeChange }: Props) {
   const styles = useStyles();
-  const [settings, setSettings] = useState<Settings | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
 
-  useEffect(() => {
-    api.getSettings().then(setSettings);
-  }, []);
-
   if (!settings) return null;
 
   async function save(next: Settings, note?: string) {
-    setSettings(await api.setSettings(next));
+    await onSettingsChange(next);
     setSaved(note ?? "Guardado.");
   }
 
+  const saveSource = (site: Site, patch: Partial<SourceSettings>) =>
+    save({ ...settings, sources: { ...settings.sources, [site]: { ...settings.sources[site], ...patch } } });
+
   return (
     <div className={styles.form}>
-      <Subtitle2>Biblioteca y descargas</Subtitle2>
-      <Field label="Carpeta de la biblioteca de anime">
-        <div className={styles.row}>
-          <Input style={{ flex: 1 }} value={settings.library_dir} readOnly />
-          <Button
-            icon={<FolderRegular />}
-            onClick={async () => {
-              const dir = await open({ directory: true, defaultPath: settings.library_dir });
-              if (typeof dir === "string") save({ ...settings, library_dir: dir });
-            }}
-          >
-            Cambiar…
-          </Button>
-        </div>
-      </Field>
+      <Subtitle2>Fuentes y bibliotecas</Subtitle2>
+      {SITES.map(({ id, name, adult }) => {
+        const src = settings.sources[id];
+        if (!src) return null;
+        const on = id === "jkanime" || src.enabled;
+        return (
+          <div key={id} className={styles.source}>
+            {id === "jkanime" ? (
+              <Text weight="semibold">{name}</Text>
+            ) : (
+              <Field hint={adult ? "Contenido para adultos (+18). Al activarlo aparece en el selector de la búsqueda." : undefined}>
+                <Switch label={name} checked={src.enabled} onChange={(_, d) => saveSource(id, { enabled: d.checked })} />
+              </Field>
+            )}
+            {on && (
+              <>
+                <Field label="Carpeta de la biblioteca">
+                  <div className={styles.row}>
+                    <Input style={{ flex: 1 }} value={src.library_dir} readOnly />
+                    <Button
+                      icon={<FolderRegular />}
+                      onClick={async () => {
+                        const dir = await open({ directory: true, defaultPath: src.library_dir });
+                        if (typeof dir === "string") saveSource(id, { library_dir: dir });
+                      }}
+                    >
+                      Cambiar…
+                    </Button>
+                  </div>
+                </Field>
+                <Field
+                  hint={
+                    src.jellyfin_layout
+                      ? "Se guarda como <carpeta>/<Anime>/Season 01/<Anime> - S01E01.mp4, lo que espera Jellyfin."
+                      : "Se guarda como <carpeta>/<Anime>/<Anime> - 01.mp4, sin carpetas de temporada."
+                  }
+                >
+                  <Switch
+                    label="Formato Jellyfin"
+                    checked={src.jellyfin_layout}
+                    onChange={(_, d) => saveSource(id, { jellyfin_layout: d.checked })}
+                  />
+                </Field>
+              </>
+            )}
+          </div>
+        );
+      })}
 
-      <Field
-        hint={
-          settings.jellyfin_layout
-            ? "Las descargas se guardan como <carpeta>/<Anime>/Season 01/<Anime> - S01E01.mp4, lo que espera Jellyfin."
-            : "Las descargas se guardan como <carpeta>/<Anime>/<Anime> - 01.mp4, sin carpetas de temporada."
-        }
-      >
-        <Switch
-          label="Formato Jellyfin"
-          checked={settings.jellyfin_layout}
-          onChange={(_, d) => save({ ...settings, jellyfin_layout: d.checked })}
-        />
-      </Field>
-
+      <Subtitle2>Descargas</Subtitle2>
       <Field label="Descargas a la vez" hint="Se aplica al reiniciar la app.">
         <SpinButton
           value={settings.concurrent_downloads}

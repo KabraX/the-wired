@@ -659,6 +659,9 @@ impl DownloadManager {
             );
         }
         if ok && tokio::fs::try_exists(&job.output).await.unwrap_or(false) {
+            // Restos de un intento anterior cortado de golpe (cierre de la app, apagón):
+            // con el MP4 ya terminado sobran y harían que el episodio pareciera incompleto
+            remove_partials(&job.output);
             Outcome::Finished(Status::Done)
         } else {
             let message = if err.is_empty() {
@@ -768,19 +771,38 @@ pub async fn is_complete(output: &Path) -> bool {
     }
 }
 
-fn has_partials(output: &Path) -> bool {
+/// Archivos temporales de yt-dlp de un episodio (`<nombre>.mp4.part`, `…part-Frag12.part`,
+/// `.ytdl`).
+fn partials(output: &Path) -> Vec<PathBuf> {
     let (Some(dir), Some(stem)) = (output.parent(), output.file_stem().and_then(|s| s.to_str()))
     else {
-        return false;
+        return Vec::new();
     };
     std::fs::read_dir(dir)
         .map(|rd| {
-            rd.flatten().any(|e| {
-                let n = e.file_name().to_string_lossy().to_string();
-                n.starts_with(&format!("{stem}.")) && (n.contains(".part") || n.ends_with(".ytdl"))
-            })
+            rd.flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    n.starts_with(&format!("{stem}."))
+                        && (n.contains(".part") || n.ends_with(".ytdl"))
+                })
+                .map(|e| e.path())
+                .collect()
         })
-        .unwrap_or(false)
+        .unwrap_or_default()
+}
+
+fn has_partials(output: &Path) -> bool {
+    !partials(output).is_empty()
+}
+
+fn remove_partials(output: &Path) {
+    for p in partials(output) {
+        match std::fs::remove_file(&p) {
+            Ok(()) => log::info!("borrado resto de descarga: {}", p.display()),
+            Err(e) => log::warn!("no se pudo borrar {}: {e}", p.display()),
+        }
+    }
 }
 
 /// Episodios de un anime que ya están completos en la biblioteca.
@@ -833,6 +855,25 @@ mod tests {
     fn progress_without_fragments_uses_bytes() {
         let (p, _, _) = pct("TW|50|100|NA|10|5|NA|NA");
         assert_eq!(p, Some(50.0));
+    }
+
+    #[test]
+    fn leftover_fragments_are_found_and_removed() {
+        let dir = std::env::temp_dir().join(format!("the-wired-partials-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("Higurashi - S01E20.mp4");
+        let keep = dir.join("Higurashi - S01E21.mp4.part-Frag3.part");
+        std::fs::write(&out, b"mp4").unwrap();
+        std::fs::write(dir.join("Higurashi - S01E20.mp4.part-Frag295.part"), b"x").unwrap();
+        std::fs::write(dir.join("Higurashi - S01E20.mp4.ytdl"), b"x").unwrap();
+        std::fs::write(&keep, b"x").unwrap();
+
+        assert!(has_partials(&out));
+        remove_partials(&out);
+        assert!(!has_partials(&out));
+        assert!(out.exists(), "el vídeo no se toca");
+        assert!(keep.exists(), "los restos de otro episodio no se tocan");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,7 +1,10 @@
 # the-wired app — diseño de la versión de escritorio (Tauri)
 
-Estado: **aprobado** (2026-10-25). Publicada la 1.0.0 (fases 0–3). En desarrollo la 1.1.0: cola
-persistente con pausa/reanudar, reintentos automáticos (1, 5 y 15 min) y notificaciones + icono de bandeja.
+Estado: **aprobado** (2026-10-25). Publicadas la 1.0.0 (fases 0–3) y la 1.1.0 (cola persistente con
+pausa/reanudar, reintentos automáticos, notificaciones, bandeja, formato Jellyfin opcional y registro).
+1.2.0: varias fuentes de la plataforma de jkanime (jkanime y HentaiJK, cada una con su biblioteca) y
+sección **Biblioteca**, que lee las carpetas de descarga y completa portadas y enlaces en un índice
+propio (`library.json` en los datos de la app, nunca en la carpeta de la biblioteca).
 
 ## Objetivo
 

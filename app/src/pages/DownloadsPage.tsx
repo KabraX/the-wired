@@ -21,7 +21,8 @@ import {
   PlayRegular,
 } from "@fluentui/react-icons";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { api, formatEta, formatSpeed, isFinished, type Job } from "../api";
+import SourceLogo from "../SourceLogo";
+import { api, formatEta, formatSpeed, isFinished, siteFromUrl, siteName, type Job } from "../api";
 
 const useStyles = makeStyles({
   toolbar: { display: "flex", gap: tokens.spacingHorizontalS, alignItems: "center", flexWrap: "wrap" },
@@ -35,6 +36,7 @@ const useStyles = makeStyles({
   },
   actions: { display: "flex", alignItems: "center" },
   error: { color: tokens.colorPaletteRedForeground1 },
+  title: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalS, minWidth: 0 },
 });
 
 const MAX_RETRIES = 3;
@@ -45,7 +47,7 @@ function statusText(j: Job, now: number): string {
     case "queued":
       return "En cola";
     case "resolving":
-      return "Buscando el vídeo en jkanime…";
+      return `Buscando el vídeo en ${siteName(siteFromUrl(j.anime_url))}…`;
     case "downloading":
       return [
         s.percent != null ? `${s.percent.toFixed(1)} %` : "Descargando",
@@ -90,6 +92,11 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
   const count = (st: string) => jobs.filter((j) => j.status.state === st).length;
   const running = jobs.filter((j) => !isFinished(j) && j.status.state !== "paused");
   const queued = jobs.filter((j) => j.status.state === "queued");
+  // Sitios con más de un episodio fallando o esperando reintento
+  const failing = jobs.filter((j) => j.status.state === "failed" || j.status.state === "waiting");
+  const failingSites = [...new Set(failing.map((j) => siteFromUrl(j.anime_url)))].filter(
+    (s) => failing.filter((j) => siteFromUrl(j.anime_url) === s).length > 1,
+  );
 
   if (jobs.length === 0)
     return <Text>No hay descargas. Busca un anime y elige episodios o una temporada.</Text>;
@@ -129,10 +136,11 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
         </Button>
       </div>
 
-      {count("failed") + count("waiting") > 1 && (
+      {failingSites.length > 0 && (
         <MessageBar intent="warning">
           <MessageBarBody>
-            Varios episodios están fallando: puede que jkanime esté caído. Los fallos temporales se reintentan solos.
+            Varios episodios están fallando: puede que {failingSites.map(siteName).join(" o ")}{" "}
+            {failingSites.length > 1 ? "estén caídos" : "esté caído"}. Los fallos temporales se reintentan solos.
           </MessageBarBody>
         </MessageBar>
       )}
@@ -152,9 +160,12 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
           return (
             <Card key={j.id} className={styles.card}>
               <div>
-                <Text weight="semibold">
-                  {j.anime} — {j.is_movie ? "Película" : `T${j.season} E${j.episode}`}
-                </Text>
+                <div className={styles.title}>
+                  <SourceLogo site={siteFromUrl(j.anime_url)} height={12} />
+                  <Text weight="semibold">
+                    {j.anime} — {j.is_movie ? "Película" : `T${j.season} E${j.episode}`}
+                  </Text>
+                </div>
                 <ProgressBar value={value} thickness="large" color={color} />
                 <Caption1 className={s.state === "failed" ? styles.error : undefined}>{statusText(j, now)}</Caption1>
               </div>

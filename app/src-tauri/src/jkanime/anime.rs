@@ -4,7 +4,7 @@ use regex::Regex;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 
-use super::{JkClient, JkError, Result};
+use super::{JkClient, JkError, Result, Site};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Episode {
@@ -14,6 +14,7 @@ pub struct Episode {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AnimeInfo {
+    pub source: Site,
     /// URL de la ficha, sin barra final (`https://jkanime.net/elfen-lied`).
     pub url: String,
     pub title: String,
@@ -55,7 +56,7 @@ pub fn parse_anime_page(html: &str) -> AnimePage {
         .map(|t| t.split(" - ").next().unwrap_or(&t).trim().to_string())
         .filter(|t| !t.is_empty());
 
-    let episodes_api = Regex::new(r"url:\s*'(https://jkanime\.net/ajax/episodes/\d+/?)'")
+    let episodes_api = Regex::new(r"url:\s*'(https://[a-z0-9.\-]+/ajax/episodes/\d+/?)'")
         .unwrap()
         .captures(html)
         .map(|c| c[1].to_string());
@@ -176,6 +177,7 @@ pub async fn fetch_anime(client: &JkClient, url: &str) -> Result<AnimeInfo> {
     episodes.dedup_by_key(|e| e.number);
 
     Ok(AnimeInfo {
+        source: Site::from_url(&url).unwrap_or_default(),
         url,
         title,
         image: page.image,

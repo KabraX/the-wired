@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   Button,
   Card,
   CardHeader,
   CardPreview,
+  Dropdown,
   Input,
+  Option,
   MessageBar,
   MessageBarBody,
   Text,
@@ -13,8 +15,9 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { ChevronLeftRegular, ChevronRightRegular, SearchRegular } from "@fluentui/react-icons";
-import { api, errorMessage, type SearchResult } from "../api";
+import { api, errorMessage, siteName, type SearchResult, type Site } from "../api";
 import Loading from "../Loading";
+import SourceLogo from "../SourceLogo";
 
 const useStyles = makeStyles({
   bar: { display: "flex", gap: tokens.spacingHorizontalS, maxWidth: "640px" },
@@ -29,10 +32,36 @@ const useStyles = makeStyles({
   pager: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalM },
 });
 
-type Props = { onOpen: (r: SearchResult) => void };
+type Props = {
+  sources: Site[];
+  /** Búsqueda pedida desde fuera (p. ej. desde la biblioteca). */
+  request?: { source: Site; query: string; n: number } | null;
+  onOpen: (r: SearchResult) => void;
+};
 
-export default function SearchPage({ onOpen }: Props) {
+const SOURCE_KEY = "the-wired.search-source";
+
+function lastSource(): Site {
+  try {
+    return (localStorage.getItem(SOURCE_KEY) as Site | null) ?? "jkanime";
+  } catch {
+    return "jkanime";
+  }
+}
+
+export default function SearchPage({ sources, request, onOpen }: Props) {
   const styles = useStyles();
+  // Última fuente usada; si se desactivó en Ajustes, se vuelve a jkanime
+  const [chosen, setChosen] = useState<Site>(lastSource);
+  const source: Site = sources.includes(chosen) ? chosen : "jkanime";
+  const changeSource = (s: Site) => {
+    setChosen(s);
+    try {
+      localStorage.setItem(SOURCE_KEY, s);
+    } catch {
+      /* sin almacenamiento: se recuerda solo en esta sesión */
+    }
+  };
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState("");
   const [page, setPage] = useState(1);
@@ -40,17 +69,33 @@ export default function SearchPage({ onOpen }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function run(q: string, p: number) {
+  // Los resultados son de un sitio: al cambiar de fuente se descartan
+  useEffect(() => {
+    setResults(null);
+    setError(null);
+  }, [source]);
+
+  useEffect(() => {
+    if (!request) return;
+    changeSource(request.source);
+    setQuery(request.query);
+    // Tras el cambio de fuente (que limpia los resultados), lanzar la búsqueda
+    const t = setTimeout(() => run(request.query, 1, request.source), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request?.n]);
+
+  async function run(q: string, p: number, src: Site = source) {
     if (!q.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      const r = await api.search(q, p);
+      const r = await api.search(src, q, p);
       setResults(r);
       setSearched(q);
       setPage(p);
     } catch (e) {
-      setError(errorMessage(e));
+      setError(errorMessage(e, src));
     } finally {
       setLoading(false);
     }
@@ -65,6 +110,22 @@ export default function SearchPage({ onOpen }: Props) {
           run(query, 1);
         }}
       >
+        {sources.length > 1 && (
+          <Dropdown
+            aria-label="Fuente"
+            style={{ minWidth: "150px" }}
+            value={siteName(source)}
+            button={{ children: <SourceLogo site={source} /> }}
+            selectedOptions={[source]}
+            onOptionSelect={(_, d) => d.optionValue && changeSource(d.optionValue as Site)}
+          >
+            {sources.map((s) => (
+              <Option key={s} value={s} text={siteName(s)}>
+                <SourceLogo site={s} />
+              </Option>
+            ))}
+          </Dropdown>
+        )}
         <Input
           style={{ flex: 1 }}
           contentBefore={<SearchRegular />}
@@ -78,7 +139,7 @@ export default function SearchPage({ onOpen }: Props) {
         </Button>
       </form>
 
-      {loading && <Loading label="Buscando en jkanime…" />}
+      {loading && <Loading label={`Buscando en ${siteName(source)}…`} />}
       {error && (
         <MessageBar intent="error">
           <MessageBarBody>{error}</MessageBarBody>

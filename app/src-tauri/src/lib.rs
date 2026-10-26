@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod download;
 pub mod jkanime;
 pub mod library;
@@ -6,10 +7,12 @@ pub mod tools;
 mod tray;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use download::{DownloadManager, EpisodeRequest, Job};
-use jkanime::{JkClient, JkError, anime::AnimeInfo, episode::VideoSource, search::SearchResult};
+use jkanime::{
+    JkClient, JkError, Site, anime::AnimeInfo, episode::VideoSource, search::SearchResult,
+};
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use tauri::{AppHandle, Manager, State};
@@ -71,10 +74,15 @@ async fn install_tools(app: AppHandle) -> Result<tools::ToolsStatus, String> {
 #[tauri::command]
 async fn search(
     client: State<'_, JkClient>,
+    settings: State<'_, SettingsState>,
+    source: Site,
     query: String,
     page: Option<u32>,
 ) -> Result<Vec<SearchResult>, JkError> {
-    jkanime::search::search(&client, &query, page.unwrap_or(1)).await
+    if !settings.settings.lock().unwrap().source(source).enabled {
+        return Ok(Vec::new());
+    }
+    jkanime::search::search(&client, source, &query, page.unwrap_or(1)).await
 }
 
 #[tauri::command]
@@ -114,6 +122,11 @@ fn set_settings(state: State<'_, SettingsState>, settings: Settings) -> Result<S
 struct DownloadArgs {
     anime: String,
     anime_url: String,
+    /// Título en el sitio y portada, para la biblioteca.
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
     is_movie: bool,
     season: u32,
     episodes: Vec<u32>,
@@ -124,12 +137,19 @@ fn enqueue_downloads(
     app: AppHandle,
     downloads: State<'_, DownloadManager>,
     settings: State<'_, SettingsState>,
+    index: State<'_, Arc<catalog::Index>>,
     args: DownloadArgs,
 ) -> Vec<u64> {
-    let (library_dir, layout) = {
-        let s = settings.settings.lock().unwrap();
-        (s.library_dir.clone(), s.layout())
-    };
+    // Cada sitio guarda en su propia biblioteca
+    let site = Site::from_url(&args.anime_url).unwrap_or_default();
+    index.record(catalog::IndexEntry {
+        source: site,
+        folder: args.anime.clone(),
+        title: args.title.clone().unwrap_or_else(|| args.anime.clone()),
+        url: args.anime_url.clone(),
+        image: args.image.clone(),
+    });
+    let (library_dir, layout) = settings.settings.lock().unwrap().library(site);
     let season = args.season.max(1);
     let requests = args
         .episodes
@@ -184,15 +204,13 @@ fn clear_finished_downloads(downloads: State<'_, DownloadManager>) {
 #[tauri::command]
 async fn episodes_on_disk(
     settings: State<'_, SettingsState>,
+    source: Site,
     anime: String,
     is_movie: bool,
     season: u32,
     episodes: Vec<u32>,
 ) -> Result<Vec<u32>, String> {
-    let (library_dir, layout) = {
-        let s = settings.settings.lock().unwrap();
-        (s.library_dir.clone(), s.layout())
-    };
+    let (library_dir, layout) = settings.settings.lock().unwrap().library(source);
     Ok(download::episodes_on_disk(
         &library_dir,
         layout,
@@ -206,9 +224,87 @@ async fn episodes_on_disk(
 
 /// Temporadas de un anime que ya tienen episodios en la biblioteca (formato Jellyfin).
 #[tauri::command]
-fn seasons_on_disk(settings: State<'_, SettingsState>, anime: String) -> Vec<u32> {
-    let library_dir = settings.settings.lock().unwrap().library_dir.clone();
+fn seasons_on_disk(settings: State<'_, SettingsState>, source: Site, anime: String) -> Vec<u32> {
+    let (library_dir, _) = settings.settings.lock().unwrap().library(source);
     library::seasons_on_disk(&library_dir, &anime)
+}
+
+/// Animes de las bibliotecas de las fuentes activas (lo más reciente primero).
+#[tauri::command]
+async fn scan_library(
+    settings: State<'_, SettingsState>,
+    index: State<'_, Arc<catalog::Index>>,
+) -> Result<Vec<catalog::LibraryAnime>, String> {
+    let dirs: Vec<(Site, PathBuf)> = {
+        let s = settings.settings.lock().unwrap();
+        Site::ALL
+            .into_iter()
+            .filter(|site| s.source(*site).enabled)
+            .map(|site| (site, s.library(site).0))
+            .collect()
+    };
+    let index = index.inner().clone();
+    // Leer carpetas (quizá en un disco USB) fuera del hilo de la interfaz
+    tauri::async_runtime::spawn_blocking(move || {
+        dirs.iter()
+            .flat_map(|(site, dir)| catalog::scan(*site, dir, &index))
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Completa el enlace y la portada de un anime de la biblioteca: lee su ficha si ya
+/// se conoce el enlace o, si no (bajado con el script), lo busca por nombre y lo
+/// acepta si el título coincide exactamente o es el único resultado. Lo encontrado queda en el índice.
+#[tauri::command]
+async fn resolve_library_anime(
+    client: State<'_, JkClient>,
+    index: State<'_, Arc<catalog::Index>>,
+    source: Site,
+    name: String,
+) -> Result<Option<catalog::IndexEntry>, JkError> {
+    let known = index.get(source, &name);
+    let (url, title) = match &known {
+        Some(e) => (e.url.clone(), e.title.clone()),
+        None => {
+            let query = catalog::folder_query(&name);
+            let want = catalog::normalize_title(&query);
+            let mut found = None;
+            // La carpeta no lleva los signos que Windows no admite ("Anehame: Ore no…" se
+            // guarda como "Anehame Ore no…") y la búsqueda de la web no lo encuentra así:
+            // si la consulta completa falla, se prueba con las primeras palabras
+            for (i, q) in catalog::search_queries(&query).iter().enumerate() {
+                let mut results = jkanime::search::search(&client, source, q, 1).await?;
+                let exact = results
+                    .iter()
+                    .position(|r| catalog::normalize_title(&r.title) == want);
+                // Con la consulta completa vale también un único resultado
+                // ("Junji Ito Collection" → "Itou Junji: Collection")
+                let pick = exact.or((i == 0 && results.len() == 1).then_some(0));
+                if let Some(i) = pick {
+                    found = Some(results.swap_remove(i));
+                    break;
+                }
+            }
+            let Some(hit) = found else {
+                log::info!("biblioteca: no se encontró «{name}» en {source:?}");
+                return Ok(None);
+            };
+            (hit.url, hit.title)
+        }
+    };
+    let html = client.get_text(&url, None).await?;
+    let page = jkanime::anime::parse_anime_page(&html);
+    let entry = catalog::IndexEntry {
+        source,
+        folder: name,
+        title: page.title.unwrap_or(title),
+        url,
+        image: page.image,
+    };
+    index.record(entry.clone());
+    Ok(Some(entry))
 }
 
 /// Nombre de la serie y temporada que se deducen del título de jkanime.
@@ -219,8 +315,8 @@ fn split_season(title: String) -> (String, u32) {
 
 /// Carpeta del anime en la biblioteca (para el botón "Abrir carpeta").
 #[tauri::command]
-fn anime_folder(settings: State<'_, SettingsState>, anime: String) -> String {
-    let library_dir = settings.settings.lock().unwrap().library_dir.clone();
+fn anime_folder(settings: State<'_, SettingsState>, source: Site, anime: String) -> String {
+    let (library_dir, _) = settings.settings.lock().unwrap().library(source);
     library_dir
         .join(library::sanitize_filename(&anime))
         .display()
@@ -336,6 +432,11 @@ pub fn run() {
                     });
                 });
             }
+            // Índice de la biblioteca (enlace y portada de cada anime)
+            let index = Arc::new(catalog::Index::load(Some(
+                app.path().app_data_dir()?.join("library.json"),
+            )));
+            app.manage(index.clone());
             app.manage(manager.clone());
             app.manage(SettingsState {
                 settings: Mutex::new(settings),
@@ -343,6 +444,19 @@ pub fn run() {
             });
             // Retoma la cola guardada (lo que quedó a medias al cerrar)
             manager.restore(app.handle());
+            // Lo descargado antes de existir el índice: sale de la cola guardada
+            for job in manager.jobs() {
+                let source = Site::from_url(&job.anime_url).unwrap_or_default();
+                if index.get(source, &job.anime).is_none() {
+                    index.record(catalog::IndexEntry {
+                        source,
+                        folder: job.anime.clone(),
+                        title: job.anime.clone(),
+                        url: job.anime_url.clone(),
+                        image: None,
+                    });
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -373,6 +487,8 @@ pub fn run() {
             resume_all_downloads,
             episodes_on_disk,
             seasons_on_disk,
+            scan_library,
+            resolve_library_anime,
             split_season,
             anime_folder,
             update_ytdlp,

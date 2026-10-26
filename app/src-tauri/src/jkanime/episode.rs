@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::{BASE_URL, JkClient, JkError, Result};
+use super::{JkClient, JkError, Result, Site};
 
 /// De dónde salió la URL, para mostrarlo y para depurar cuando la web cambie.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -117,11 +117,12 @@ pub async fn fetch_video_source(
     is_movie: bool,
 ) -> Result<VideoSource> {
     let ep_url = episode_url(anime_url, number, is_movie);
+    let base = Site::from_url(anime_url).unwrap_or_default().base_url();
     let html = client.get_text(&ep_url, None).await?;
 
     if let Some(path) = extract_jkplayer_path(&html) {
         let player = client
-            .get_text(&format!("{BASE_URL}/jkplayer/{path}"), Some(&ep_url))
+            .get_text(&format!("{base}/jkplayer/{path}"), Some(&ep_url))
             .await;
         if let Some(url) = player.ok().as_deref().and_then(extract_player_video_url) {
             return Ok(VideoSource {
@@ -134,7 +135,7 @@ pub async fn fetch_video_source(
 
     if let Some(path) = extract_jkphp_path(&html) {
         let player = client
-            .get_text(&format!("{BASE_URL}/jk.php{path}"), Some(&ep_url))
+            .get_text(&format!("{base}/jk.php{path}"), Some(&ep_url))
             .await;
         if let Some(url) = player.ok().as_deref().and_then(extract_player_video_url) {
             return Ok(VideoSource {

@@ -3,10 +3,12 @@
 use scraper::{Html, Selector};
 use serde::Serialize;
 
-use super::{BASE_URL, JkClient, JkError, Result};
+use super::{JkClient, JkError, Result, Site};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchResult {
+    /// Sitio del resultado (sale de la URL).
+    pub source: Site,
     pub title: String,
     /// Enlace a la ficha, p. ej. `https://jkanime.net/elfen-lied/`.
     pub url: String,
@@ -22,12 +24,13 @@ pub fn query_path(query: &str) -> String {
     query.split_whitespace().collect::<Vec<_>>().join("_")
 }
 
-pub fn search_url(query: &str, page: u32) -> String {
+pub fn search_url(site: Site, query: &str, page: u32) -> String {
+    let base = site.base_url();
     let q = url::form_urlencoded::byte_serialize(query_path(query).as_bytes()).collect::<String>();
     if page <= 1 {
-        format!("{BASE_URL}/buscar/{q}/")
+        format!("{base}/buscar/{q}/")
     } else {
-        format!("{BASE_URL}/buscar/{q}/{page}/")
+        format!("{base}/buscar/{q}/{page}/")
     }
 }
 
@@ -56,6 +59,7 @@ pub fn parse_search(html: &str) -> Vec<SearchResult> {
                 .find(|e| !e.value().classes().any(|c| c == "anime"))
                 .and_then(|e| text_of(&e));
             Some(SearchResult {
+                source: Site::from_url(&url).unwrap_or_default(),
                 title,
                 url,
                 image,
@@ -77,13 +81,21 @@ fn text_of(e: &scraper::ElementRef) -> Option<String> {
 }
 
 /// Busca una página de resultados. Una página inexistente (404) devuelve lista vacía.
-pub async fn search(client: &JkClient, query: &str, page: u32) -> Result<Vec<SearchResult>> {
+pub async fn search(
+    client: &JkClient,
+    site: Site,
+    query: &str,
+    page: u32,
+) -> Result<Vec<SearchResult>> {
     if query_path(query).is_empty() {
         return Ok(Vec::new());
     }
-    match client.get_text(&search_url(query, page), None).await {
+    match client.get_text(&search_url(site, query, page), None).await {
         Ok(html) => {
-            let results = parse_search(&html);
+            let mut results = parse_search(&html);
+            for r in &mut results {
+                r.source = site;
+            }
             // Una página con contenido pero sin el contenedor de resultados ni el
             // formulario de búsqueda no es la página que esperamos.
             if results.is_empty() && !html.contains("anime__item") && !html.contains("buscar") {

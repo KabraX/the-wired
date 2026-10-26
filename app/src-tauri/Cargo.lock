@@ -4753,7 +4753,7 @@ dependencies = [
 
 [[package]]
 name = "the-wired"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "base64 0.23.1",
  "futures-util",

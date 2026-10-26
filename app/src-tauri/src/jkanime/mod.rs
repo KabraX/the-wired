@@ -1,4 +1,5 @@
-//! Scraper de jkanime.net.
+//! Scraper de jkanime.net y de los sitios de su misma plataforma (hentaijk.com):
+//! mismo HTML y mismas APIs, solo cambia el dominio.
 //!
 //! Traducción a Rust de la lógica del script `the-wired`. Las funciones `parse_*` /
 //! `extract_*` son puras (reciben HTML y devuelven datos) para poder probarlas con
@@ -11,9 +12,42 @@ pub mod search;
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-pub const BASE_URL: &str = "https://jkanime.net";
+/// Sitios que la app sabe leer. Todos usan la plataforma de jkanime.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Site {
+    #[default]
+    Jkanime,
+    /// Contenido +18: desactivado por defecto.
+    Hentaijk,
+}
+
+impl Site {
+    pub const ALL: [Site; 2] = [Site::Jkanime, Site::Hentaijk];
+
+    pub fn base_url(self) -> &'static str {
+        match self {
+            Site::Jkanime => "https://jkanime.net",
+            Site::Hentaijk => "https://hentaijk.com",
+        }
+    }
+
+    /// Sitio de una URL absoluta (`https://hentaijk.com/...` → `Hentaijk`).
+    pub fn from_url(url: &str) -> Option<Site> {
+        let host = url::Url::parse(url.trim())
+            .ok()?
+            .host_str()?
+            .to_ascii_lowercase();
+        let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+        Site::ALL
+            .into_iter()
+            .find(|s| s.base_url().ends_with(&format!("//{host}")))
+    }
+}
 
 /// Mismo navegador con el que se identifica el script.
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
@@ -24,13 +58,13 @@ pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWeb
 #[serde(tag = "kind", content = "detail")]
 pub enum JkError {
     /// No hay conexión, se agotó el tiempo o jkanime no responde (5xx tras reintentos).
-    #[error("jkanime.net no responde: {0}")]
+    #[error("la web no responde: {0}")]
     Unavailable(String),
     /// La página no existe (404).
     #[error("no encontrado: {0}")]
     NotFound(String),
     /// La página llegó pero no tiene lo que esperamos: probablemente la web cambió.
-    #[error("la web de jkanime parece haber cambiado: {0}")]
+    #[error("la web parece haber cambiado: {0}")]
     SiteChanged(String),
 }
 
@@ -108,7 +142,7 @@ impl JkClient {
                     StatusCode::NOT_FOUND => return Err(JkError::NotFound(url.to_string())),
                     s if s.is_server_error() => {
                         last = format!("HTTP {} en {url}", s.as_u16());
-                        log::warn!("jkanime: {last} (intento {})", attempt + 1);
+                        log::warn!("{last} (intento {})", attempt + 1);
                     }
                     s => {
                         return Err(JkError::Unavailable(format!(
@@ -119,7 +153,7 @@ impl JkClient {
                 },
                 Err(e) => {
                     last = crate::error_chain(&e);
-                    log::warn!("jkanime: {url}: {last} (intento {})", attempt + 1);
+                    log::warn!("{url}: {last} (intento {})", attempt + 1);
                 }
             }
         }

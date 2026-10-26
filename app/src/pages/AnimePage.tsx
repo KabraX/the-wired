@@ -20,7 +20,7 @@ import {
   FolderOpenRegular,
 } from "@fluentui/react-icons";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { api, errorMessage, type AnimeInfo, type Job, type SearchResult } from "../api";
+import { api, errorMessage, siteName, type AnimeInfo, type Job, type SearchResult } from "../api";
 import Loading from "../Loading";
 
 const useStyles = makeStyles({
@@ -55,18 +55,18 @@ export default function AnimePage({ result, jobs, onBack, onQueued }: Props) {
   useEffect(() => {
     setInfo(null);
     setError(null);
-    api.getSettings().then((s) => setJellyfin(s.jellyfin_layout));
+    api.getSettings().then((s) => setJellyfin(s.sources[result.source]?.jellyfin_layout ?? true));
     api
       .anime(result.url)
       .then(async (i) => {
-        // jkanime publica cada temporada como un anime aparte ("Overlord II", "... Season 2")
+        // Estos sitios publican cada temporada como un anime aparte ("Overlord II", "... Season 2")
         const [name, n] = await api.splitSeason(i.title);
         setSeries(name);
         setSeason(n);
         setInfo(i);
       })
-      .catch((e) => setError(errorMessage(e)));
-  }, [result.url]);
+      .catch((e) => setError(errorMessage(e, result.source)));
+  }, [result.url, result.source]);
 
   const numbers = useMemo(() => info?.episodes.map((e) => e.number) ?? [], [info]);
   const useSeasons = jellyfin && !info?.is_movie;
@@ -78,8 +78,8 @@ export default function AnimePage({ result, jobs, onBack, onQueued }: Props) {
   const finishedCount = jobs.filter((j) => j.anime === folder && j.status.state === "done").length;
   const refreshDisk = useCallback(() => {
     if (!info || !folder) return;
-    api.episodesOnDisk(folder, info.is_movie, effSeason, numbers).then((n) => setOnDisk(new Set(n)));
-    api.seasonsOnDisk(folder).then(setSeasonsOnDisk);
+    api.episodesOnDisk(info.source, folder, info.is_movie, effSeason, numbers).then((n) => setOnDisk(new Set(n)));
+    api.seasonsOnDisk(info.source, folder).then(setSeasonsOnDisk);
   }, [info, folder, effSeason, numbers]);
   useEffect(refreshDisk, [refreshDisk, finishedCount]);
 
@@ -104,6 +104,8 @@ export default function AnimePage({ result, jobs, onBack, onQueued }: Props) {
     await api.enqueueDownloads({
       anime: folder,
       animeUrl: info.url,
+      title: info.title,
+      image: info.image,
       isMovie: info.is_movie,
       season: effSeason,
       episodes,
@@ -132,7 +134,7 @@ export default function AnimePage({ result, jobs, onBack, onQueued }: Props) {
           <Text>
             {info.kind && <Badge appearance="tint">{info.kind}</Badge>}{" "}
             {info.quality && <Badge appearance="outline">{info.quality}</Badge>}{" "}
-            {info.episodes.length} episodio{info.episodes.length === 1 ? "" : "s"} en jkanime ·{" "}
+            {info.episodes.length} episodio{info.episodes.length === 1 ? "" : "s"} en {siteName(info.source)} ·{" "}
             {onDisk.size === 0 ? "ninguno descargado" : `${onDisk.size} descargado${onDisk.size === 1 ? "" : "s"}`}
             {useSeasons && ` en la temporada ${season}`}
           </Text>
@@ -148,7 +150,7 @@ export default function AnimePage({ result, jobs, onBack, onQueued }: Props) {
           )}
           {useSeasons && (
             <Text size={200} className={styles.hint}>
-              jkanime publica cada temporada como un anime aparte. Aquí eliges en qué serie y temporada de tu
+              {siteName(info.source)} publica cada temporada como un anime aparte. Aquí eliges en qué serie y temporada de tu
               biblioteca se guarda este.
             </Text>
           )}
@@ -185,7 +187,7 @@ export default function AnimePage({ result, jobs, onBack, onQueued }: Props) {
               icon={<FolderOpenRegular />}
               appearance="subtle"
               disabled={onDisk.size === 0}
-              onClick={async () => revealItemInDir(await api.animeFolder(folder))}
+              onClick={async () => revealItemInDir(await api.animeFolder(info.source, folder))}
             >
               Abrir carpeta
             </Button>

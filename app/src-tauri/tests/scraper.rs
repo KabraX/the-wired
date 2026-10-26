@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use the_wired_lib::jkanime::{JkClient, anime, episode, search};
+use the_wired_lib::jkanime::{JkClient, Site, anime, episode, search};
 use the_wired_lib::library;
 
 fn fixture(name: &str) -> String {
@@ -46,13 +46,70 @@ fn search_empty_page() {
 fn search_urls_like_the_script() {
     assert_eq!(search::query_path("  elfen   lied "), "elfen_lied");
     assert_eq!(
-        search::search_url("elfen lied", 1),
+        search::search_url(Site::Jkanime, "elfen lied", 1),
         "https://jkanime.net/buscar/elfen_lied/"
     );
     assert_eq!(
-        search::search_url("elfen lied", 2),
+        search::search_url(Site::Jkanime, "elfen lied", 2),
         "https://jkanime.net/buscar/elfen_lied/2/"
     );
+    assert_eq!(
+        search::search_url(Site::Hentaijk, "bible black", 1),
+        "https://hentaijk.com/buscar/bible_black/"
+    );
+}
+
+#[test]
+fn site_from_url() {
+    assert_eq!(
+        Site::from_url("https://jkanime.net/elfen-lied/"),
+        Some(Site::Jkanime)
+    );
+    assert_eq!(
+        Site::from_url("https://www.jkanime.net/x"),
+        Some(Site::Jkanime)
+    );
+    assert_eq!(
+        Site::from_url("https://hentaijk.com/bible-black/"),
+        Some(Site::Hentaijk)
+    );
+    assert_eq!(Site::from_url("https://example.com/"), None);
+    assert_eq!(Site::from_url("no es una url"), None);
+    // Los resultados llevan su sitio
+    let r = search::parse_search(&fixture("search.html"));
+    assert_eq!(r[0].source, Site::Jkanime);
+}
+
+#[test]
+fn episodes_api_on_any_site() {
+    let html =
+        fixture("anime.html").replace("https://jkanime.net/ajax", "https://hentaijk.com/ajax");
+    assert_eq!(
+        anime::parse_anime_page(&html).episodes_api.as_deref(),
+        Some("https://hentaijk.com/ajax/episodes/270/")
+    );
+}
+
+#[test]
+fn settings_from_1_1_are_migrated() {
+    use the_wired_lib::settings::Settings;
+    let old =
+        r#"{"library_dir":"/mnt/media/Anime","concurrent_downloads":3,"jellyfin_layout":false}"#;
+    let s: Settings = serde_json::from_str::<Settings>(old).unwrap().sanitized();
+    let jk = s.source(Site::Jkanime);
+    assert!(jk.enabled);
+    assert_eq!(jk.library_dir, Path::new("/mnt/media/Anime"));
+    assert!(!jk.jellyfin_layout);
+    assert_eq!(s.concurrent_downloads, 3);
+    // hentaijk: desactivado, carpeta hermana y formato Jellyfin
+    let hjk = s.source(Site::Hentaijk);
+    assert!(!hjk.enabled);
+    assert_eq!(hjk.library_dir, Path::new("/mnt/media/Hentai"));
+    assert!(hjk.jellyfin_layout);
+    // Se guarda con el formato nuevo, sin los campos viejos
+    let saved = serde_json::to_value(&s).unwrap();
+    assert!(saved.get("library_dir").is_none());
+    assert_eq!(saved["sources"]["hentaijk"]["enabled"], false);
 }
 
 // ---------------------------------------------------------------- ficha
@@ -199,7 +256,7 @@ fn library_names_match_the_script() {
 #[ignore = "usa la red y depende de que jkanime responda"]
 async fn live_search_anime_and_source() {
     let client = JkClient::new();
-    let results = search::search(&client, "elfen lied", 1)
+    let results = search::search(&client, Site::Jkanime, "elfen lied", 1)
         .await
         .expect("búsqueda");
     let first = results
