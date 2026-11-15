@@ -15,3 +15,8 @@ history.db
 # Descargas a medias de yt-dlp
 *.part
 *.ytdl
+
+#Agents configs
+AGENTS.md
+app/docs/spec.md
+.opencode
