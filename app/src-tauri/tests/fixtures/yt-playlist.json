@@ -1,0 +1,30 @@
+{
+  "_type": "playlist",
+  "id": "PL1",
+  "webpage_url": "https://www.youtube.com/playlist?list=PL1",
+  "title": "My Playlist",
+  "channel": "List Owner",
+  "entries": [
+    {
+      "_type": "video",
+      "id": "a1",
+      "title": "First",
+      "duration": 60,
+      "playlist_index": 1
+    },
+    {
+      "_type": "video",
+      "id": "a2",
+      "title": "[Private video]",
+      "playlist_index": 2
+    },
+    {
+      "_type": "video",
+      "id": "a3",
+      "title": "Third",
+      "duration": 90,
+      "playlist_index": 3,
+      "url": "https://www.youtube.com/watch?v=a3"
+    }
+  ]
+}

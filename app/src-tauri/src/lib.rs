@@ -5,6 +5,7 @@ pub mod library;
 pub mod settings;
 pub mod tools;
 mod tray;
+pub mod youtube;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -82,6 +83,9 @@ async fn search(
     if !settings.settings.lock().unwrap().source(source).enabled {
         return Ok(Vec::new());
     }
+    if source == Site::Youtube {
+        return youtube::search(&query, page.unwrap_or(1)).await;
+    }
     jkanime::search::search(&client, source, &query, page.unwrap_or(1)).await
 }
 
@@ -98,6 +102,109 @@ async fn video_source(
     is_movie: bool,
 ) -> Result<VideoSource, JkError> {
     jkanime::episode::fetch_video_source(&client, &anime_url, number, is_movie).await
+}
+
+// ------------------------------------------------------------------ youtube
+
+/// Ficha de un vídeo o de una playlist de YouTube (título, portada, vídeos).
+#[tauri::command]
+async fn youtube_info(url: String) -> Result<youtube::YtInfo, JkError> {
+    youtube::fetch_info(&url).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YoutubeDownloadArgs {
+    /// Playlist que da nombre a la carpeta; ausente si el vídeo va suelto.
+    #[serde(default)]
+    folder: Option<String>,
+    /// URL de la ficha (la del vídeo o la de la playlist).
+    url: String,
+    #[serde(default)]
+    image: Option<String>,
+    format: youtube::YtFormat,
+    items: Vec<youtube::YtItem>,
+}
+
+#[tauri::command]
+fn enqueue_youtube_downloads(
+    app: AppHandle,
+    downloads: State<'_, DownloadManager>,
+    settings: State<'_, SettingsState>,
+    index: State<'_, Arc<catalog::Index>>,
+    args: YoutubeDownloadArgs,
+) -> Vec<u64> {
+    let (library_dir, _) = settings.settings.lock().unwrap().library(Site::Youtube);
+    // En el índice: la playlist por el nombre de su carpeta y cada vídeo por su título
+    if let Some(folder) = &args.folder {
+        index.record(catalog::IndexEntry {
+            source: Site::Youtube,
+            folder: folder.clone(),
+            title: folder.clone(),
+            url: args.url.clone(),
+            image: args.image.clone(),
+        });
+    }
+    for item in &args.items {
+        index.record(catalog::IndexEntry {
+            source: Site::Youtube,
+            folder: item.title.clone(),
+            title: item.title.clone(),
+            url: item.url.clone(),
+            image: args.image.clone(),
+        });
+    }
+    let requests = args
+        .items
+        .into_iter()
+        .map(|item| download::YoutubeRequest {
+            folder: args.folder.clone(),
+            url: args.url.clone(),
+            item,
+            format: args.format.clone(),
+        })
+        .collect();
+    downloads.enqueue_youtube(&app, &library_dir, requests)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YoutubeOnDiskArgs {
+    #[serde(default)]
+    folder: Option<String>,
+    format: youtube::YtFormat,
+    items: Vec<youtube::YtItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct YoutubeOnDisk {
+    url: String,
+    path: String,
+}
+
+/// Vídeos de YouTube que ya están completos en la biblioteca.
+#[tauri::command]
+fn youtube_items_on_disk(
+    settings: State<'_, SettingsState>,
+    args: YoutubeOnDiskArgs,
+) -> Vec<YoutubeOnDisk> {
+    let (library_dir, _) = settings.settings.lock().unwrap().library(Site::Youtube);
+    args.items
+        .into_iter()
+        .filter_map(|item| {
+            let path = library::youtube_output_path(
+                &library_dir,
+                args.folder.as_deref(),
+                item.index,
+                &item.title,
+                args.format.extension(),
+            );
+            (path.is_file() && !download::has_leftovers(&path)).then(|| YoutubeOnDisk {
+                url: item.url,
+                path: path.display().to_string(),
+            })
+        })
+        .collect()
 }
 
 // ------------------------------------------------------------------ ajustes
@@ -264,6 +371,10 @@ async fn resolve_library_anime(
     source: Site,
     name: String,
 ) -> Result<Option<catalog::IndexEntry>, JkError> {
+    // YouTube no tiene ficha HTML que leer: lo que se guardó al descargar es todo
+    if source == Site::Youtube {
+        return Ok(index.get(source, &name));
+    }
     let known = index.get(source, &name);
     let (url, title) = match &known {
         Some(e) => (e.url.clone(), e.title.clone()),
@@ -475,6 +586,9 @@ pub fn run() {
             search,
             anime,
             video_source,
+            youtube_info,
+            enqueue_youtube_downloads,
+            youtube_items_on_disk,
             get_settings,
             set_settings,
             enqueue_downloads,

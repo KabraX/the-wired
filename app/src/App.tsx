@@ -29,6 +29,7 @@ import AnimePage from "./pages/AnimePage";
 import DownloadsPage from "./pages/DownloadsPage";
 import SettingsPage from "./pages/SettingsPage";
 import LibraryPage from "./pages/LibraryPage";
+import YoutubePage from "./pages/YoutubePage";
 import { buildTheme, loadPrefs, savePrefs, type ThemePrefs } from "./theme";
 
 type Page = "buscar" | "biblioteca" | "descargas" | "ajustes";
@@ -132,6 +133,13 @@ export default function App() {
   // La búsqueda se conserva al entrar en un anime y volver
   const searchPage = <SearchPage sources={enabledSites(settings)} request={searchRequest} onOpen={setOpened} />;
   const animeOpen = (page === "buscar" && opened) || (page === "biblioteca" && libOpened);
+  // YouTube tiene su propia ficha (vídeo/playlist); el resto, la de jkanime
+  const detail = (r: SearchResult, onBack: () => void) =>
+    r.source === "youtube" ? (
+      <YoutubePage result={r} jobs={jobs} onBack={onBack} onQueued={() => setPage("descargas")} />
+    ) : (
+      <AnimePage result={r} jobs={jobs} onBack={onBack} onQueued={() => setPage("descargas")} />
+    );
 
   return (
     <FluentProvider theme={theme}>
@@ -155,9 +163,7 @@ export default function App() {
           <ToolsBanner status={tools} onChange={setTools} />
           {!animeOpen && <Title2>{titles[page]}</Title2>}
           <div style={{ display: page === "buscar" && !opened ? "contents" : "none" }}>{searchPage}</div>
-          {page === "buscar" && opened && (
-            <AnimePage result={opened} jobs={jobs} onBack={() => setOpened(null)} onQueued={() => setPage("descargas")} />
-          )}
+          {page === "buscar" && opened && detail(opened, () => setOpened(null))}
           {/* La biblioteca sigue montada al abrir un anime: volver no relee el disco */}
           <div style={{ display: page === "biblioteca" && !libOpened ? "contents" : "none" }}>
             <LibraryPage
@@ -171,14 +177,7 @@ export default function App() {
               }}
             />
           </div>
-          {page === "biblioteca" && libOpened && (
-            <AnimePage
-              result={libOpened}
-              jobs={jobs}
-              onBack={() => setLibOpened(null)}
-              onQueued={() => setPage("descargas")}
-            />
-          )}
+          {page === "biblioteca" && libOpened && detail(libOpened, () => setLibOpened(null))}
           {page === "descargas" && <DownloadsPage jobs={jobs} onChanged={reloadJobs} />}
           {page === "ajustes" && <SettingsPage
               settings={settings}

@@ -1,0 +1,9 @@
+{
+  "_type": "video",
+  "id": "vid1",
+  "webpage_url": "https://www.youtube.com/watch?v=vid1",
+  "title": "A Single Video",
+  "channel": "Some Channel",
+  "duration": 192.0,
+  "thumbnail": "https://i.ytimg.com/vi/vid1/maxresdefault.jpg"
+}

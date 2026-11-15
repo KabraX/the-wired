@@ -20,6 +20,7 @@ use tokio::sync::{Semaphore, watch};
 use crate::jkanime::{JkClient, JkError, episode};
 use crate::library::{self, Layout};
 use crate::tools;
+use crate::youtube::{self, YtFormat, YtItem};
 
 /// Evento que recibe la interfaz cada vez que cambia un trabajo.
 pub const EVENT: &str = "download-updated";
@@ -79,6 +80,7 @@ impl Status {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: u64,
+    /// Serie (o playlist) a la que pertenece.
     pub anime: String,
     pub anime_url: String,
     pub is_movie: bool,
@@ -89,11 +91,26 @@ pub struct Job {
     /// Reintentos automáticos ya hechos.
     #[serde(default)]
     pub attempts: u32,
+    /// YouTube: URL del vídeo concreto (en una playlist, `anime_url` es la lista).
+    #[serde(default)]
+    pub video_url: Option<String>,
+    /// YouTube: título del vídeo.
+    #[serde(default)]
+    pub video_title: Option<String>,
+    /// YouTube: formato pedido. `None` en los episodios de jkanime/hentaijk.
+    #[serde(default)]
+    pub yt_format: Option<YtFormat>,
 }
 
 impl Job {
-    /// "Elfen Lied T1 E3" (o "Akira (película)") para el registro.
+    /// "Elfen Lied T1 E3", "Akira (película)" o el título del vídeo de YouTube.
     pub fn label(&self) -> String {
+        if self.yt_format.is_some() {
+            return self
+                .video_title
+                .clone()
+                .unwrap_or_else(|| self.anime.clone());
+        }
         if self.is_movie {
             format!("{} (película)", self.anime)
         } else {
@@ -109,6 +126,17 @@ pub struct EpisodeRequest {
     pub is_movie: bool,
     pub season: u32,
     pub episode: u32,
+}
+
+/// Un vídeo de YouTube a descargar (suelto o dentro de una playlist).
+#[derive(Debug, Clone)]
+pub struct YoutubeRequest {
+    /// Playlist que da nombre a la carpeta; `None` si el vídeo va suelto.
+    pub folder: Option<String>,
+    /// URL de la ficha: la de la lista o la del vídeo.
+    pub url: String,
+    pub item: YtItem,
+    pub format: YtFormat,
 }
 
 /// Orden que recibe el trabajador de cada descarga.
@@ -265,6 +293,63 @@ impl DownloadManager {
                     output,
                     status: Status::Queued,
                     attempts: 0,
+                    video_url: None,
+                    video_title: None,
+                    yt_format: None,
+                };
+                inner.jobs.push(job.clone());
+                job
+            };
+            ids.push(job.id);
+            log::info!("{}: en cola → {}", job.label(), job.output.display());
+            let _ = app.emit(EVENT, &job);
+            self.start(app, job.id);
+        }
+        self.changed();
+        ids
+    }
+
+    /// Encola vídeos de YouTube. Los que ya están en cola, en curso o en pausa para
+    /// el mismo archivo se ignoran.
+    pub fn enqueue_youtube<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        library_dir: &Path,
+        requests: Vec<YoutubeRequest>,
+    ) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for req in requests {
+            let output = library::youtube_output_path(
+                library_dir,
+                req.folder.as_deref(),
+                req.item.index,
+                &req.item.title,
+                req.format.extension(),
+            );
+            let job = {
+                let mut inner = self.inner.lock().unwrap();
+                if inner
+                    .jobs
+                    .iter()
+                    .any(|j| j.output == output && !j.status.is_finished())
+                {
+                    continue;
+                }
+                let id = inner.next_id;
+                inner.next_id += 1;
+                let job = Job {
+                    id,
+                    anime: req.folder.clone().unwrap_or_else(|| req.item.title.clone()),
+                    anime_url: req.url.clone(),
+                    is_movie: false,
+                    season: 1,
+                    episode: req.item.index.unwrap_or(1),
+                    output,
+                    status: Status::Queued,
+                    attempts: 0,
+                    video_url: Some(req.item.url.clone()),
+                    video_title: Some(req.item.title.clone()),
+                    yt_format: Some(req.format.clone()),
                 };
                 inner.jobs.push(job.clone());
                 job
@@ -549,22 +634,29 @@ impl DownloadManager {
             return Outcome::Finished(Status::Skipped);
         }
 
-        self.set_status(app, job.id, Status::Resolving);
-        let source = tokio::select! {
-            r = episode::fetch_video_source(&self.client, &job.anime_url, job.episode, job.is_movie) => r,
-            _ = signal.changed() => return stop_outcome(*signal.borrow()),
-        };
-        let source = match source {
-            Ok(s) => {
-                log::debug!("{}: fuente {:?}", job.label(), s.kind);
-                s
-            }
-            Err(e) => {
-                let transient = matches!(e, JkError::Unavailable(_));
-                return Outcome::Failed {
-                    message: e.to_string(),
-                    transient,
-                };
+        // En YouTube el enlace ya es el del vídeo: no hay que resolver ninguna fuente.
+        let url = if job.yt_format.is_some() {
+            job.video_url
+                .clone()
+                .unwrap_or_else(|| job.anime_url.clone())
+        } else {
+            self.set_status(app, job.id, Status::Resolving);
+            let source = tokio::select! {
+                r = episode::fetch_video_source(&self.client, &job.anime_url, job.episode, job.is_movie) => r,
+                _ = signal.changed() => return stop_outcome(*signal.borrow()),
+            };
+            match source {
+                Ok(s) => {
+                    log::debug!("{}: fuente {:?}", job.label(), s.kind);
+                    s.url
+                }
+                Err(e) => {
+                    let transient = matches!(e, JkError::Unavailable(_));
+                    return Outcome::Failed {
+                        message: e.to_string(),
+                        transient,
+                    };
+                }
             }
         };
 
@@ -582,22 +674,31 @@ impl DownloadManager {
         if let Some(dir) = tools::managed_ffmpeg_dir() {
             cmd.arg("--ffmpeg-location").arg(dir);
         }
-        cmd.args([
-            "--newline",
-            "--no-colors",
-            "--concurrent-fragments",
-            "4",
-            "--merge-output-format",
-            "mp4",
-            "--progress-template",
-            PROGRESS_TEMPLATE,
-            "-o",
-        ])
-        .arg(&template)
-        .arg(&source.url)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        if let Some(format) = &job.yt_format {
+            cmd.args(youtube::download_args(
+                &url,
+                &template,
+                format,
+                PROGRESS_TEMPLATE,
+            ));
+        } else {
+            cmd.args([
+                "--newline",
+                "--no-colors",
+                "--concurrent-fragments",
+                "4",
+                "--merge-output-format",
+                "mp4",
+                "--progress-template",
+                PROGRESS_TEMPLATE,
+                "-o",
+            ])
+            .arg(&template)
+            .arg(&url);
+        }
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -670,8 +771,13 @@ impl DownloadManager {
                 err
             };
             // Casi todos los fallos de yt-dlp son de red o de un enlace caducado: reintentar
-            // con una URL nueva tiene sentido. Lo que no, es un enlace que no sabe leer.
-            let transient = !message.contains("Unsupported URL");
+            // con una URL nueva tiene sentido. Lo que no, es un enlace que no sabe leer o un
+            // vídeo de YouTube privado/borrado/restringido.
+            let transient = if job.yt_format.is_some() {
+                !youtube::is_permanent_error(&message)
+            } else {
+                !message.contains("Unsupported URL")
+            };
             Outcome::Failed { message, transient }
         }
     }
@@ -794,6 +900,11 @@ fn partials(output: &Path) -> Vec<PathBuf> {
 
 fn has_partials(output: &Path) -> bool {
     !partials(output).is_empty()
+}
+
+/// ¿Quedan restos de descarga junto al archivo? (lo usa la biblioteca de YouTube)
+pub fn has_leftovers(output: &Path) -> bool {
+    has_partials(output)
 }
 
 fn remove_partials(output: &Path) {

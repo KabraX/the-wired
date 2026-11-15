@@ -18,11 +18,23 @@ const useStyles = makeStyles({
 
 type Props = { site: Site; height?: number; className?: string };
 
+// Los logos de jkanime/hentaijk son PNG; YouTube se dibuja en SVG (texto nítido).
+const EXT: Record<Site, "png" | "svg"> = {
+  jkanime: "png",
+  hentaijk: "png",
+  youtube: "svg",
+};
+
 export default function SourceLogo({ site, height = 16, className }: Props) {
   const styles = useStyles();
   return (
     <span className={mergeClasses(styles.plate, className)} title={siteName(site)}>
-      <img className={styles.img} src={`/sources/${site}.png`} alt={siteName(site)} style={{ height }} />
+      <img
+        className={styles.img}
+        src={`/sources/${site}.${EXT[site]}`}
+        alt={siteName(site)}
+        style={{ height }}
+      />
     </span>
   );
 }

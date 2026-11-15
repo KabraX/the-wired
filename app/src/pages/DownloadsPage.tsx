@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Badge,
   Button,
   Caption1,
   Card,
@@ -22,7 +23,7 @@ import {
 } from "@fluentui/react-icons";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import SourceLogo from "../SourceLogo";
-import { api, formatEta, formatSpeed, isFinished, siteFromUrl, siteName, type Job } from "../api";
+import { api, formatEta, formatSpeed, isFinished, siteFromUrl, siteName, type Job, type YtFormat } from "../api";
 
 const useStyles = makeStyles({
   toolbar: { display: "flex", gap: tokens.spacingHorizontalS, alignItems: "center", flexWrap: "wrap" },
@@ -40,6 +41,11 @@ const useStyles = makeStyles({
 });
 
 const MAX_RETRIES = 3;
+
+/** "MP4 1080p" o "MP3", en la tarjeta de una descarga de YouTube. */
+function ytFormatLabel(f: YtFormat): string {
+  return f.kind === "video" ? `MP4${f.max_height ? ` ${f.max_height}p` : ""}` : f.codec.toUpperCase();
+}
 
 function statusText(j: Job, now: number): string {
   const s = j.status;
@@ -162,9 +168,18 @@ export default function DownloadsPage({ jobs, onChanged }: Props) {
               <div>
                 <div className={styles.title}>
                   <SourceLogo site={siteFromUrl(j.anime_url)} height={12} />
-                  <Text weight="semibold">
-                    {j.anime} — {j.is_movie ? "Película" : `T${j.season} E${j.episode}`}
-                  </Text>
+                  {j.yt_format ? (
+                    <>
+                      <Text weight="semibold">{j.video_title ?? j.anime}</Text>
+                      <Badge appearance="tint" size="small">
+                        {ytFormatLabel(j.yt_format)}
+                      </Badge>
+                    </>
+                  ) : (
+                    <Text weight="semibold">
+                      {j.anime} — {j.is_movie ? "Película" : `T${j.season} E${j.episode}`}
+                    </Text>
+                  )}
                 </div>
                 <ProgressBar value={value} thickness="large" color={color} />
                 <Caption1 className={s.state === "failed" ? styles.error : undefined}>{statusText(j, now)}</Caption1>

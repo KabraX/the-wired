@@ -73,6 +73,23 @@ fn site_from_url() {
         Site::from_url("https://hentaijk.com/bible-black/"),
         Some(Site::Hentaijk)
     );
+    // YouTube: normal, móvil, música y enlaces cortos
+    assert_eq!(
+        Site::from_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+        Some(Site::Youtube)
+    );
+    assert_eq!(
+        Site::from_url("https://m.youtube.com/watch?v=dQw4w9WgXcQ"),
+        Some(Site::Youtube)
+    );
+    assert_eq!(
+        Site::from_url("https://music.youtube.com/playlist?list=PL123"),
+        Some(Site::Youtube)
+    );
+    assert_eq!(
+        Site::from_url("https://youtu.be/dQw4w9WgXcQ"),
+        Some(Site::Youtube)
+    );
     assert_eq!(Site::from_url("https://example.com/"), None);
     assert_eq!(Site::from_url("no es una url"), None);
     // Los resultados llevan su sitio
@@ -106,10 +123,16 @@ fn settings_from_1_1_are_migrated() {
     assert!(!hjk.enabled);
     assert_eq!(hjk.library_dir, Path::new("/mnt/media/Hentai"));
     assert!(hjk.jellyfin_layout);
+    // youtube: activo por defecto, carpeta hermana y sin formato Jellyfin
+    let yt = s.source(Site::Youtube);
+    assert!(yt.enabled);
+    assert_eq!(yt.library_dir, Path::new("/mnt/media/YouTube"));
+    assert!(!yt.jellyfin_layout);
     // Se guarda con el formato nuevo, sin los campos viejos
     let saved = serde_json::to_value(&s).unwrap();
     assert!(saved.get("library_dir").is_none());
     assert_eq!(saved["sources"]["hentaijk"]["enabled"], false);
+    assert_eq!(saved["sources"]["youtube"]["enabled"], true);
 }
 
 // ---------------------------------------------------------------- ficha

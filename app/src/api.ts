@@ -1,15 +1,21 @@
 // Tipos y llamadas al núcleo en Rust (comandos de Tauri).
 import { invoke } from "@tauri-apps/api/core";
 
-/** Sitios que sabe leer el núcleo (todos de la plataforma de jkanime). */
-export type Site = "jkanime" | "hentaijk";
+/** Sitios que sabe leer el núcleo (jkanime y hentaijk son la misma plataforma). */
+export type Site = "jkanime" | "hentaijk" | "youtube";
 export const SITES: { id: Site; name: string; adult: boolean }[] = [
   { id: "jkanime", name: "jkanime", adult: false },
   { id: "hentaijk", name: "HentaiJK", adult: true },
+  { id: "youtube", name: "YouTube", adult: false },
 ];
 export const siteName = (s: Site) => SITES.find((x) => x.id === s)?.name ?? s;
 /** Sitio de una URL de ficha o episodio (las descargas solo guardan la URL). */
-export const siteFromUrl = (url: string): Site => (/^https?:\/\/(www\.)?hentaijk\.com\//i.test(url) ? "hentaijk" : "jkanime");
+export const siteFromUrl = (url: string): Site =>
+  /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test(url)
+    ? "youtube"
+    : /^https?:\/\/(www\.)?hentaijk\.com\//i.test(url)
+      ? "hentaijk"
+      : "jkanime";
 
 export type SearchResult = {
   source: Site;
@@ -36,9 +42,39 @@ export type AnimeInfo = {
 export type SourceSettings = { enabled: boolean; library_dir: string; jellyfin_layout: boolean };
 export type Settings = { concurrent_downloads: number; sources: Record<Site, SourceSettings> };
 
-/** Sitios activos en los ajustes (jkanime siempre lo está). */
+/** Cómo se descarga un vídeo de YouTube: MP4 o solo audio (MP3/M4A). */
+export type YtFormat =
+  | { kind: "video"; max_height: number | null }
+  | { kind: "audio"; codec: "mp3" | "m4a" };
+/** Un vídeo concreto de YouTube. `index` es su posición en la playlist. */
+export type YtItem = { url: string; title: string; index?: number | null };
+
+export type YtEntry = {
+  index: number;
+  id: string;
+  title: string;
+  url: string;
+  duration: number | null;
+};
+
+export type YtInfo = {
+  url: string;
+  title: string;
+  image: string | null;
+  channel: string | null;
+  duration: number | null;
+  is_playlist: boolean;
+  /** Los vídeos de la playlist o, si es uno suelto, ese único vídeo. */
+  entries: YtEntry[];
+};
+
+export type YtOnDisk = { url: string; path: string };
+
+/** Sitios activos en los ajustes (jkanime siempre lo está; YouTube por defecto). */
 export const enabledSites = (s: Settings | null): Site[] =>
-  SITES.filter((x) => x.id === "jkanime" || s?.sources[x.id]?.enabled).map((x) => x.id);
+  SITES.filter((x) => (x.id === "jkanime" ? true : (s?.sources[x.id]?.enabled ?? x.id === "youtube"))).map(
+    (x) => x.id,
+  );
 
 /** Un anime encontrado en la carpeta de la biblioteca de una fuente. */
 export type LibraryAnime = {
@@ -87,6 +123,10 @@ export type Job = {
   output: string;
   status: JobStatus;
   attempts: number;
+  /** YouTube: URL del vídeo concreto y su título. */
+  video_url?: string | null;
+  video_title?: string | null;
+  yt_format?: YtFormat | null;
 };
 
 // Error del scraper tal como lo serializa Rust (JkError)
@@ -123,6 +163,17 @@ export const api = {
     season: number;
     episodes: number[];
   }) => invoke<number[]>("enqueue_downloads", { args }),
+  youtubeInfo: (url: string) => invoke<YtInfo>("youtube_info", { url }),
+  enqueueYoutubeDownloads: (args: {
+    /** Playlist que da nombre a la carpeta; `null` si el vídeo va suelto. */
+    folder: string | null;
+    url: string;
+    image: string | null;
+    format: YtFormat;
+    items: YtItem[];
+  }) => invoke<number[]>("enqueue_youtube_downloads", { args }),
+  youtubeItemsOnDisk: (args: { folder: string | null; format: YtFormat; items: YtItem[] }) =>
+    invoke<YtOnDisk[]>("youtube_items_on_disk", { args }),
   listDownloads: () => invoke<Job[]>("list_downloads"),
   cancelDownload: (id: number) => invoke<void>("cancel_download", { id }),
   pauseDownload: (id: number) => invoke<void>("pause_download", { id }),

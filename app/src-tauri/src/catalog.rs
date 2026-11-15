@@ -241,10 +241,20 @@ pub fn scan_anime(source: Site, dir: &Path) -> Option<LibraryAnime> {
 
 /// Todos los animes de una carpeta de biblioteca, lo más reciente primero.
 pub fn scan(source: Site, library_dir: &Path, index: &Index) -> Vec<LibraryAnime> {
+    let mut list = if source == Site::Youtube {
+        scan_youtube(library_dir, index)
+    } else {
+        scan_anime_folders(source, library_dir, index)
+    };
+    list.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
+    list
+}
+
+fn scan_anime_folders(source: Site, library_dir: &Path, index: &Index) -> Vec<LibraryAnime> {
     let Ok(entries) = std::fs::read_dir(library_dir) else {
         return Vec::new();
     };
-    let mut list: Vec<LibraryAnime> = entries
+    entries
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
@@ -257,7 +267,160 @@ pub fn scan(source: Site, library_dir: &Path, index: &Index) -> Vec<LibraryAnime
             }
             a
         })
-        .collect();
-    list.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
+        .collect()
+}
+
+// ---------------------------------------------------------------- YouTube
+
+/// Nombre de archivo de YouTube y si es un resto de descarga.
+/// `Lo-Fi Mix.mp3` → ("Lo-Fi Mix", false); `Half.mp4.part-Frag1.part` → ("Half", true).
+fn youtube_file(file: &str) -> Option<(&str, bool)> {
+    let lower = file.to_ascii_lowercase();
+    let partial = lower.contains(".part") || lower.ends_with(".ytdl");
+    for ext in [".mp4", ".mp3", ".m4a"] {
+        if let Some(i) = lower.find(ext) {
+            if !partial && i + ext.len() == lower.len() {
+                return Some((&file[..i], false));
+            }
+            if partial {
+                return Some((&file[..i], true));
+            }
+        }
+    }
+    if partial {
+        let i = lower.find(".ytdl").unwrap_or(file.len());
+        return Some((&file[..i], true));
+    }
+    None
+}
+
+fn modified_secs(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn with_index(source: Site, mut anime: LibraryAnime, index: &Index) -> LibraryAnime {
+    if let Some(i) = index.get(source, &anime.name) {
+        anime.title = Some(i.title);
+        anime.url = Some(i.url);
+        anime.image = i.image;
+    }
+    anime
+}
+
+/// Una carpeta de playlist: cuenta sus vídeos (MP4/MP3/M4A) y sus restos.
+fn scan_youtube_folder(name: &str, dir: &Path) -> Option<LibraryAnime> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut episodes = 0u32;
+    let mut partial = 0u32;
+    let mut bytes = 0u64;
+    let mut modified = 0u64;
+    for e in entries.flatten() {
+        let file = e.file_name().to_string_lossy().to_string();
+        let Ok(meta) = e.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let Some((_, is_partial)) = youtube_file(&file) else {
+            continue;
+        };
+        modified = modified.max(modified_secs(&meta));
+        if is_partial {
+            partial += 1;
+        } else {
+            episodes += 1;
+            bytes += meta.len();
+        }
+    }
+    if episodes == 0 && partial == 0 {
+        return None;
+    }
+    Some(LibraryAnime {
+        source: Site::Youtube,
+        name: name.to_string(),
+        path: dir.display().to_string(),
+        seasons: if episodes > 0 { vec![1] } else { Vec::new() },
+        episodes,
+        partial,
+        bytes,
+        modified,
+        title: None,
+        url: None,
+        image: None,
+    })
+}
+
+struct RootVideo {
+    complete: bool,
+    partial: bool,
+    bytes: u64,
+    modified: u64,
+    /// Archivo que se abre con "Mostrar en la carpeta" (el MP4/MP3 ya terminado).
+    path: PathBuf,
+}
+
+/// Biblioteca de YouTube: cada vídeo suelto en la raíz es una entrada y cada carpeta
+/// es una playlist (vídeos sin subcarpetas ni `Season NN`).
+fn scan_youtube(library_dir: &Path, index: &Index) -> Vec<LibraryAnime> {
+    let Ok(entries) = std::fs::read_dir(library_dir) else {
+        return Vec::new();
+    };
+    let mut list = Vec::new();
+    let mut root: BTreeMap<String, RootVideo> = BTreeMap::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        if meta.is_dir() {
+            if let Some(anime) = scan_youtube_folder(&name, &e.path()) {
+                list.push(with_index(Site::Youtube, anime, index));
+            }
+            continue;
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        let Some((title, is_partial)) = youtube_file(&name) else {
+            continue;
+        };
+        let path = e.path();
+        let entry = root.entry(title.to_string()).or_insert_with(|| RootVideo {
+            complete: false,
+            partial: false,
+            bytes: 0,
+            modified: 0,
+            path: path.clone(),
+        });
+        entry.modified = entry.modified.max(modified_secs(&meta));
+        if is_partial {
+            entry.partial = true;
+        } else {
+            entry.complete = true;
+            entry.bytes += meta.len();
+            entry.path = path;
+        }
+    }
+    for (name, video) in root {
+        let anime = LibraryAnime {
+            source: Site::Youtube,
+            name,
+            path: video.path.display().to_string(),
+            seasons: if video.complete { vec![1] } else { Vec::new() },
+            // Un vídeo suelto es una sola entrada aunque se haya bajado en MP4 y MP3
+            episodes: u32::from(video.complete),
+            partial: u32::from(video.partial),
+            bytes: video.bytes,
+            modified: video.modified,
+            title: None,
+            url: None,
+            image: None,
+        };
+        list.push(with_index(Site::Youtube, anime, index));
+    }
     list
 }

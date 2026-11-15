@@ -29,6 +29,9 @@ const useStyles = makeStyles({
   card: { cursor: "pointer" },
   poster: { aspectRatio: "2 / 3", objectFit: "cover", width: "100%" },
   noPoster: { aspectRatio: "2 / 3", backgroundColor: tokens.colorNeutralBackground3 },
+  // YouTube: miniaturas horizontales (16:9), no carteles de serie
+  posterWide: { aspectRatio: "16 / 9", objectFit: "cover", width: "100%" },
+  noPosterWide: { aspectRatio: "16 / 9", backgroundColor: tokens.colorNeutralBackground3 },
   pager: { display: "flex", alignItems: "center", gap: tokens.spacingHorizontalM },
 });
 
@@ -94,6 +97,8 @@ export default function SearchPage({ sources, request, onOpen }: Props) {
       setResults(r);
       setSearched(q);
       setPage(p);
+      // URL de YouTube pegada: se abre su ficha (vídeo o playlist) directamente
+      if (src === "youtube" && /^https?:\/\//i.test(q.trim()) && r.length === 1) onOpen(r[0]);
     } catch (e) {
       setError(errorMessage(e, src));
     } finally {
@@ -129,7 +134,7 @@ export default function SearchPage({ sources, request, onOpen }: Props) {
         <Input
           style={{ flex: 1 }}
           contentBefore={<SearchRegular />}
-          placeholder="Nombre del anime…"
+          placeholder={source === "youtube" ? "Buscar en YouTube o pegar un enlace…" : "Nombre del anime…"}
           value={query}
           onChange={(_, d) => setQuery(d.value)}
           autoFocus
@@ -159,9 +164,14 @@ export default function SearchPage({ sources, request, onOpen }: Props) {
               <Card key={r.url} className={styles.card} onClick={() => onOpen(r)}>
                 <CardPreview>
                   {r.image ? (
-                    <img className={styles.poster} src={r.image} alt="" loading="lazy" />
+                    <img
+                      className={r.source === "youtube" ? styles.posterWide : styles.poster}
+                      src={r.image}
+                      alt=""
+                      loading="lazy"
+                    />
                   ) : (
-                    <div className={styles.noPoster} />
+                    <div className={r.source === "youtube" ? styles.noPosterWide : styles.noPoster} />
                   )}
                 </CardPreview>
                 <CardHeader

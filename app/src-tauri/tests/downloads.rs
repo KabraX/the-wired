@@ -11,9 +11,10 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use the_wired_lib::download::{DownloadManager, EpisodeRequest, Job, Status};
+use the_wired_lib::download::{DownloadManager, EpisodeRequest, Job, Status, YoutubeRequest};
 use the_wired_lib::jkanime::JkClient;
 use the_wired_lib::library::{self, Layout};
+use the_wired_lib::youtube::{AudioCodec, YtFormat, YtItem};
 
 fn temp_library(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("the-wired-test-{name}-{}", std::process::id()));
@@ -239,6 +240,111 @@ async fn queue_is_saved_and_restored() {
         vec![unreachable_request(3)],
     );
     assert!(new[0] > jobs.iter().map(|j| j.id).max().unwrap());
+    for j in dm.jobs() {
+        dm.cancel(app.handle(), j.id);
+    }
+    let _ = std::fs::remove_dir_all(lib);
+}
+
+// ---------------------------------------------------------------- YouTube
+
+fn yt_item(url: &str, title: &str, index: u32) -> YtItem {
+    YtItem {
+        url: url.to_string(),
+        title: title.to_string(),
+        index: Some(index),
+    }
+}
+
+fn yt_request(index: u32, format: YtFormat) -> YoutubeRequest {
+    YoutubeRequest {
+        folder: Some("My List".into()),
+        url: "https://www.youtube.com/playlist?list=PL1".into(),
+        item: yt_item(
+            &format!("https://www.youtube.com/watch?v=a{index}"),
+            &format!("Video {index}"),
+            index,
+        ),
+        format,
+    }
+}
+
+#[test]
+fn old_queue_entries_load_without_youtube_fields() {
+    let old = r#"[{"id":1,"anime":"Elfen Lied","anime_url":"https://jkanime.net/elfen-lied","is_movie":false,"season":1,"episode":1,"output":"/tmp/Elfen Lied/Season 01/Elfen Lied - S01E01.mp4","status":{"state":"done"},"attempts":0}]"#;
+    let jobs: Vec<Job> = serde_json::from_str(old).unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert!(jobs[0].yt_format.is_none());
+    assert!(jobs[0].video_url.is_none());
+    assert!(jobs[0].video_title.is_none());
+}
+
+#[test]
+fn youtube_format_serializes_for_the_frontend() {
+    let video = serde_json::to_value(YtFormat::Video {
+        max_height: Some(1080),
+    })
+    .unwrap();
+    assert_eq!(video["kind"], "video");
+    assert_eq!(video["max_height"], 1080);
+    let audio = serde_json::to_value(YtFormat::Audio {
+        codec: AudioCodec::M4a,
+    })
+    .unwrap();
+    assert_eq!(audio["kind"], "audio");
+    assert_eq!(audio["codec"], "m4a");
+}
+
+#[tokio::test]
+async fn youtube_jobs_have_their_own_paths_and_are_deduplicated() {
+    let app = tauri::test::mock_app();
+    let dm = DownloadManager::new(1, JkClient::new(), None);
+    let lib = temp_library("yt");
+    let ids = dm.enqueue_youtube(
+        app.handle(),
+        &lib,
+        vec![
+            yt_request(
+                1,
+                YtFormat::Video {
+                    max_height: Some(720),
+                },
+            ),
+            yt_request(
+                2,
+                YtFormat::Audio {
+                    codec: AudioCodec::Mp3,
+                },
+            ),
+        ],
+    );
+    assert_eq!(ids.len(), 2);
+    let jobs = dm.jobs();
+    assert_eq!(jobs[0].anime, "My List");
+    assert_eq!(jobs[0].video_title.as_deref(), Some("Video 1"));
+    assert_eq!(jobs[0].episode, 1);
+    assert!(
+        jobs[0].output.ends_with("My List/01 - Video 1.mp4"),
+        "{}",
+        jobs[0].output.display()
+    );
+    assert!(
+        jobs[1].output.ends_with("My List/02 - Video 2.mp3"),
+        "{}",
+        jobs[1].output.display()
+    );
+    // Repetir un vídeo ya encolado no crea otro trabajo
+    let again = dm.enqueue_youtube(
+        app.handle(),
+        &lib,
+        vec![yt_request(
+            1,
+            YtFormat::Video {
+                max_height: Some(720),
+            },
+        )],
+    );
+    assert!(again.is_empty());
     for j in dm.jobs() {
         dm.cancel(app.handle(), j.id);
     }

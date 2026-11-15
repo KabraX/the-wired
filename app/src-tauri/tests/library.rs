@@ -1,10 +1,11 @@
 //! Lectura de la biblioteca local (carpetas de descarga) con carpetas temporales.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use the_wired_lib::catalog::{self, Index, IndexEntry};
 use the_wired_lib::jkanime::Site;
+use the_wired_lib::library;
 
 fn temp_library(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("the-wired-lib-{name}-{}", std::process::id()));
@@ -143,4 +144,72 @@ fn shorter_queries_when_the_folder_lost_punctuation() {
         catalog::normalize_title("Anehame: Ore no Hatsukoi ga Jisshi na Wake ga Nai"),
         catalog::normalize_title("Anehame Ore no Hatsukoi ga Jisshi na Wake ga Nai")
     );
+}
+
+// ---------------------------------------------------------------- YouTube
+
+#[test]
+fn youtube_output_paths() {
+    let lib = Path::new("/lib/YouTube");
+    assert_eq!(
+        library::youtube_output_path(lib, None, None, "Song: Live", "mp4"),
+        Path::new("/lib/YouTube/Song Live.mp4")
+    );
+    assert_eq!(
+        library::youtube_output_path(lib, Some("My List"), Some(3), "Third", "mp3"),
+        Path::new("/lib/YouTube/My List/03 - Third.mp3")
+    );
+    assert_eq!(
+        library::youtube_output_path(lib, Some("My List"), None, "Extra", "m4a"),
+        Path::new("/lib/YouTube/My List/Extra.m4a")
+    );
+}
+
+#[test]
+fn scan_youtube_files_and_playlists() {
+    let lib = temp_library("yt");
+    // Vídeos sueltos en la raíz (el primero, con entrada en el índice)
+    touch(lib.join("Single Video.mp4"), 1000);
+    touch(lib.join("Lo-Fi Mix.mp3"), 800);
+    // Una descarga a medias sin MP4 terminado
+    touch(lib.join("Half Done.mp4.part"), 10);
+    // Una playlist en su carpeta, con un episodio a medias
+    touch(lib.join("My List/01 - First.mp4"), 400);
+    touch(lib.join("My List/03 - Third.mp3"), 300);
+    touch(lib.join("My List/03 - Third.mp3.part-Frag2.part"), 5);
+    // Ni imágenes ni carpetas vacías cuentan
+    touch(lib.join("cover.jpg"), 1);
+    fs::create_dir_all(lib.join("Vacía")).unwrap();
+
+    let index = Index::load(None);
+    index.record(IndexEntry {
+        source: Site::Youtube,
+        folder: "Single Video".into(),
+        title: "Single Video".into(),
+        url: "https://www.youtube.com/watch?v=abc123".into(),
+        image: Some("https://i.ytimg.com/vi/abc123/hqdefault.jpg".into()),
+    });
+    let mut list = catalog::scan(Site::Youtube, &lib, &index);
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    let names: Vec<_> = list.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["Half Done", "Lo-Fi Mix", "My List", "Single Video"]);
+
+    assert_eq!((list[0].episodes, list[0].partial), (0, 1));
+    assert_eq!((list[1].episodes, list[1].partial), (1, 0));
+    assert_eq!(list[1].seasons, [1]);
+    assert_eq!(list[1].bytes, 800);
+
+    assert_eq!((list[2].episodes, list[2].partial), (2, 1));
+    assert_eq!(list[2].path, lib.join("My List").display().to_string());
+
+    let single = &list[3];
+    assert_eq!((single.episodes, single.partial), (1, 0));
+    assert_eq!(single.bytes, 1000);
+    assert_eq!(
+        single.url.as_deref(),
+        Some("https://www.youtube.com/watch?v=abc123")
+    );
+    assert!(single.image.is_some());
+    assert!(single.path.ends_with("Single Video.mp4"));
+    let _ = fs::remove_dir_all(&lib);
 }

@@ -1,0 +1,33 @@
+{
+  "_type": "playlist",
+  "id": "ytsearch3:synthwave",
+  "title": "synthwave",
+  "entries": [
+    {
+      "_type": "video",
+      "id": "abc123",
+      "url": "https://www.youtube.com/watch?v=abc123",
+      "title": "Midnight Drive",
+      "duration": 245.0,
+      "channel": "Neon Channel",
+      "thumbnails": [
+        { "url": "https://i.ytimg.com/vi/abc123/default.jpg", "width": 120 },
+        { "url": "https://i.ytimg.com/vi/abc123/hqdefault.jpg", "width": 480 }
+      ]
+    },
+    {
+      "_type": "video",
+      "id": "def456",
+      "title": "Rainy Alley",
+      "duration": 3625,
+      "uploader": "Lo-Fi Boy",
+      "thumbnail": "https://cdn.example/rainy.jpg"
+    },
+    {
+      "_type": "url",
+      "ie_key": "YoutubeTab",
+      "url": "https://www.youtube.com/@un-canal",
+      "title": "Un canal entero"
+    }
+  ]
+}

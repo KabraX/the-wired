@@ -147,9 +147,20 @@ export default function LibraryPage({ sources, jobs, onOpen, onSearch }: Props) 
             <Card key={`${a.source}/${a.name}`} className={styles.card} onClick={open}>
               <CardPreview logo={{ className: styles.logo, children: <SourceLogo site={a.source} height={12} /> }}>
                 {a.image ? (
-                  <img className={styles.poster} src={a.image} alt="" loading="lazy" />
+                  <img
+                    className={styles.poster}
+                    style={a.source === "youtube" ? { aspectRatio: "16 / 9" } : undefined}
+                    src={a.image}
+                    alt=""
+                    loading="lazy"
+                  />
                 ) : (
-                  <div className={styles.noPoster}>{a.name.charAt(0).toUpperCase()}</div>
+                  <div
+                    className={styles.noPoster}
+                    style={a.source === "youtube" ? { aspectRatio: "16 / 9" } : undefined}
+                  >
+                    {a.name.charAt(0).toUpperCase()}
+                  </div>
                 )}
               </CardPreview>
               <CardHeader
@@ -157,7 +168,9 @@ export default function LibraryPage({ sources, jobs, onOpen, onSearch }: Props) 
                 description={
                   <div className={styles.badges}>
                     <Badge appearance="tint">
-                      {a.episodes} ep.{a.seasons.length > 1 ? ` · ${a.seasons.length} temporadas` : ""}
+                      {a.source === "youtube"
+                        ? `${a.episodes} vídeo${a.episodes === 1 ? "" : "s"}`
+                        : `${a.episodes} ep.${a.seasons.length > 1 ? ` · ${a.seasons.length} temporadas` : ""}`}
                     </Badge>
                     {active > 0 && <Badge color="brand">descargando {active}</Badge>}
                     {a.partial > 0 && (

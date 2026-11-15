@@ -35,6 +35,7 @@ const useStyles = makeStyles({
     paddingLeft: tokens.spacingHorizontalM,
     borderLeft: `2px solid ${tokens.colorNeutralStroke2}`,
   },
+  sourceHint: { color: tokens.colorNeutralForeground3 },
   swatches: { display: "flex", flexWrap: "wrap", gap: tokens.spacingHorizontalS },
   swatch: {
     width: "36px",
@@ -93,7 +94,15 @@ export default function SettingsPage({ settings, onSettingsChange, tools, onTool
             {id === "jkanime" ? (
               <Text weight="semibold">{name}</Text>
             ) : (
-              <Field hint={adult ? "Contenido para adultos (+18). Al activarlo aparece en el selector de la búsqueda." : undefined}>
+              <Field
+                hint={
+                  adult
+                    ? "Contenido para adultos (+18). Al activarlo aparece en el selector de la búsqueda."
+                    : id === "youtube"
+                      ? "Vídeos y playlists de YouTube en MP4 o solo audio. Al activarlo aparece en el selector de la búsqueda."
+                      : undefined
+                }
+              >
                 <Switch label={name} checked={src.enabled} onChange={(_, d) => saveSource(id, { enabled: d.checked })} />
               </Field>
             )}
@@ -113,19 +122,27 @@ export default function SettingsPage({ settings, onSettingsChange, tools, onTool
                     </Button>
                   </div>
                 </Field>
-                <Field
-                  hint={
-                    src.jellyfin_layout
-                      ? "Se guarda como <carpeta>/<Anime>/Season 01/<Anime> - S01E01.mp4, lo que espera Jellyfin."
-                      : "Se guarda como <carpeta>/<Anime>/<Anime> - 01.mp4, sin carpetas de temporada."
-                  }
-                >
-                  <Switch
-                    label="Formato Jellyfin"
-                    checked={src.jellyfin_layout}
-                    onChange={(_, d) => saveSource(id, { jellyfin_layout: d.checked })}
-                  />
-                </Field>
+                {id !== "youtube" && (
+                  <Field
+                    hint={
+                      src.jellyfin_layout
+                        ? "Se guarda como <carpeta>/<Anime>/Season 01/<Anime> - S01E01.mp4, lo que espera Jellyfin."
+                        : "Se guarda como <carpeta>/<Anime>/<Anime> - 01.mp4, sin carpetas de temporada."
+                    }
+                  >
+                    <Switch
+                      label="Formato Jellyfin"
+                      checked={src.jellyfin_layout}
+                      onChange={(_, d) => saveSource(id, { jellyfin_layout: d.checked })}
+                    />
+                  </Field>
+                )}
+                {id === "youtube" && (
+                  <Text size={200} className={styles.sourceHint}>
+                    Se guarda como &lt;carpeta&gt;/&lt;Vídeo&gt;.mp4 (o .mp3). Las playlists, en una carpeta propia
+                    con el nombre de la lista.
+                  </Text>
+                )}
               </>
             )}
           </div>

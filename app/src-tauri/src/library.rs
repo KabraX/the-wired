@@ -81,6 +81,27 @@ pub fn output_path(
     }
 }
 
+/// Ruta de un vídeo de YouTube: suelto en la raíz de la biblioteca
+/// (`<carpeta>/<Título>.mp4`) o dentro de la carpeta de su playlist
+/// (`<carpeta>/<Playlist>/<01> - <Título>.mp4`). No usa temporadas: no es una serie.
+pub fn youtube_output_path(
+    library: &Path,
+    playlist: Option<&str>,
+    index: Option<u32>,
+    title: &str,
+    ext: &str,
+) -> PathBuf {
+    let safe = sanitize_filename(title);
+    let file = match index {
+        Some(n) if playlist.is_some() => format!("{n:02} - {safe}.{ext}"),
+        _ => format!("{safe}.{ext}"),
+    };
+    match playlist {
+        Some(p) => library.join(sanitize_filename(p)).join(file),
+        None => library.join(file),
+    }
+}
+
 /// Temporadas (`Season NN`) con algún `.mp4` dentro de la carpeta del anime.
 pub fn seasons_on_disk(library: &Path, anime: &str) -> Vec<u32> {
     let re = Regex::new(r"^Season (\d+)$").unwrap();

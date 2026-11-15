@@ -95,6 +95,19 @@ impl Settings {
                     .unwrap_or_else(|| jk_dir.join("Hentai")),
                 ..Default::default()
             });
+
+        // YouTube: activo por defecto, en su propia carpeta hermana y sin formato
+        // Jellyfin (los vídeos no son episodios de una serie).
+        self.sources
+            .entry(Site::Youtube)
+            .or_insert_with(|| SourceSettings {
+                enabled: true,
+                library_dir: jk_dir
+                    .parent()
+                    .map(|p| p.join("YouTube"))
+                    .unwrap_or_else(|| jk_dir.join("YouTube")),
+                jellyfin_layout: false,
+            });
         self
     }
 

@@ -14,7 +14,8 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-/// Sitios que la app sabe leer. Todos usan la plataforma de jkanime.
+/// Sitios que la app sabe leer. jkanime y hentaijk usan la misma plataforma; YouTube
+/// se lee con `yt-dlp` (búsqueda, ficha y descarga).
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -24,25 +25,41 @@ pub enum Site {
     Jkanime,
     /// Contenido +18: desactivado por defecto.
     Hentaijk,
+    /// YouTube (vídeos y playlists); activo por defecto.
+    Youtube,
 }
 
 impl Site {
-    pub const ALL: [Site; 2] = [Site::Jkanime, Site::Hentaijk];
+    pub const ALL: [Site; 3] = [Site::Jkanime, Site::Hentaijk, Site::Youtube];
 
     pub fn base_url(self) -> &'static str {
         match self {
             Site::Jkanime => "https://jkanime.net",
             Site::Hentaijk => "https://hentaijk.com",
+            Site::Youtube => "https://www.youtube.com",
         }
     }
 
-    /// Sitio de una URL absoluta (`https://hentaijk.com/...` → `Hentaijk`).
+    /// YouTube no se lee por HTTP sino con `yt-dlp`.
+    pub fn is_youtube(self) -> bool {
+        self == Site::Youtube
+    }
+
+    /// Sitio de una URL absoluta (`https://hentaijk.com/...` → `Hentaijk`,
+    /// `https://youtu.be/...` → `Youtube`).
     pub fn from_url(url: &str) -> Option<Site> {
         let host = url::Url::parse(url.trim())
             .ok()?
             .host_str()?
             .to_ascii_lowercase();
-        let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+        let host = host.strip_prefix("www.").unwrap_or(&host);
+        let host = host.strip_prefix("m.").unwrap_or(host);
+        if matches!(
+            host,
+            "youtube.com" | "youtu.be" | "music.youtube.com" | "youtube-nocookie.com"
+        ) {
+            return Some(Site::Youtube);
+        }
         Site::ALL
             .into_iter()
             .find(|s| s.base_url().ends_with(&format!("//{host}")))
